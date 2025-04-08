@@ -25,7 +25,8 @@ def cdiv_fn(x, y):
 
 
 @triton_dejavu.jitcache(
-    cache_lock=global_cache_lock,
+    # cache_lock=global_cache_lock,
+    cache_lock=None,
     check_keys=["query_stride_0", "query_stride_1", "filter_by_query_len"],
 )
 @triton.jit

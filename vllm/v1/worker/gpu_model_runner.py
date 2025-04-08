@@ -1437,15 +1437,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     for k, v in self.intermediate_tensors.items()
                 })
 
-            # TODO: only if triton backend?        
-            dummy_attn_metadata = self.attn_metadata_builder.build(
-                num_reqs=num_reqs,
-                num_actual_tokens=num_tokens,
-                max_query_len=self.max_model_len,
-                common_prefix_len=0,
-            )
+            # # TODO: only if triton backend?        
+            # dummy_attn_metadata = self.attn_metadata_builder.build(
+            #     num_reqs=num_reqs,
+            #     num_actual_tokens=num_tokens,
+            #     max_query_len=self.max_model_len,
+            #     common_prefix_len=0,
+            # )
 
-            with set_forward_context(dummy_attn_metadata,
+            with set_forward_context(None,
                                      self.vllm_config,
                                      num_tokens=num_tokens):
                 hidden_states = model(
@@ -1636,8 +1636,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         logger.info("Graph capturing finished in %.0f secs, took %.2f GiB",
                     elapsed_time, cuda_graph_size / (1 << 30))
         # now we assume all necessary triton kernel variants are compiled
-        global_cache_lock.lock()
-        logger.info("Triton JitCache activated.")
+        # global_cache_lock.lock()
+        # logger.info("Triton JitCache activated.")
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         """
