@@ -337,10 +337,10 @@ def chunked_prefill_paged_decode(
             v_scale=v_scale,
         )
     else:
-        assert num_seqs <= 2048
+        assert num_seqs <= 4096
         kernel_paged_attention_2d[(
             # num_seqs,
-            2048,
+            4096,
             num_kv_heads,
         )](
             output_ptr=output,
