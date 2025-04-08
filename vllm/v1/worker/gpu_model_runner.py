@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.distributed
 import torch.nn as nn
+from triton_dejavu import global_cache_lock
 
 from vllm.attention import AttentionType, get_attn_backend
 from vllm.attention.layer import Attention
@@ -1436,7 +1437,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     for k, v in self.intermediate_tensors.items()
                 })
 
-            with set_forward_context(None,
+            # TODO: only if triton backend?        
+            dummy_attn_metadata = self.attn_metadata_builder.build(
+                num_reqs=num_reqs,
+                num_actual_tokens=num_tokens,
+                max_query_len=self.max_model_len,
+                common_prefix_len=0,
+            )
+
+            with set_forward_context(dummy_attn_metadata,
                                      self.vllm_config,
                                      num_tokens=num_tokens):
                 hidden_states = model(
@@ -1626,6 +1635,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # This usually takes 5~20 seconds.
         logger.info("Graph capturing finished in %.0f secs, took %.2f GiB",
                     elapsed_time, cuda_graph_size / (1 << 30))
+        # now we assume all necessary triton kernel variants are compiled
+        global_cache_lock.lock()
+        logger.info("Triton JitCache activated.")
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         """

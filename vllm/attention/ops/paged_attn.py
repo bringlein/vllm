@@ -53,6 +53,9 @@ class PagedAttention:
         num_kv_heads: int,
         head_size: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if len(kv_cache) < 2:
+            return kv_cache, kv_cache
+            # return None, None
         x = 16 // kv_cache.element_size()
         num_blocks = kv_cache.shape[1]
 
@@ -74,6 +77,9 @@ class PagedAttention:
         k_scale: torch.Tensor,
         v_scale: torch.Tensor,
     ) -> None:
+        # if key_cache is None or value_cache is None:
+        if len(key_cache) < 2:
+            return
         ops.reshape_and_cache(
             key,
             value,
