@@ -29,7 +29,8 @@ def cdiv_fn(x, y):
     cache_lock=None,
     # check_keys=["query_stride_0", "query_stride_1", "filter_by_query_len"],
     check_keys=["x", "BLOCK_SIZE", "USE_ALIBI_SLOPES", "SLIDING_WINDOW", "filter_by_query_len"],
-    cache_launch_grid=True,
+    # cache_launch_grid=True,
+    cache_launch_grid=False,
 )
 @triton.jit
 def kernel_paged_attention_2d(
@@ -70,6 +71,7 @@ def kernel_paged_attention_2d(
         query_start_len_ptr,  # [num_seqs+1]
         num_seqs, # int
 ):
+    # TODO: add type annotations
     seq_idx = tl.program_id(0)
     if seq_idx >= num_seqs:
         return
@@ -337,10 +339,10 @@ def chunked_prefill_paged_decode(
             v_scale=v_scale,
         )
     else:
-        assert num_seqs <= 4096
+        # assert num_seqs <= 4096
         kernel_paged_attention_2d[(
-            # num_seqs,
-            4096,
+            num_seqs,
+            # 4096,
             num_kv_heads,
         )](
             output_ptr=output,
