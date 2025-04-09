@@ -41,9 +41,9 @@ def kernel_paged_attention_2d(
         block_tables_ptr,  # [num_seqs, max_num_blocks_per_seq]
         seq_lens_ptr,  # [num_seqs]
         alibi_slopes_ptr,  # [num_query_heads]
-        scale,  # float32
-        k_scale,  # float32
-        v_scale,  # float32
+        scale: float,  # float32
+        k_scale: float,  # float32
+        v_scale: float,  # float32
         num_query_heads: tl.constexpr,  # int
         num_queries_per_kv: tl.constexpr,  # int
         num_queries_per_kv_padded: tl.constexpr,  # int
@@ -69,9 +69,8 @@ def kernel_paged_attention_2d(
         stride_v_cache_3: tl.int64,  # int
         filter_by_query_len: tl.constexpr,  # bool
         query_start_len_ptr,  # [num_seqs+1]
-        num_seqs, # int
+        num_seqs: int,
 ):
-    # TODO: add type annotations
     seq_idx = tl.program_id(0)
     if seq_idx >= num_seqs:
         return
