@@ -72,8 +72,8 @@ def kernel_paged_attention_2d(
         num_seqs: int,
 ):
     seq_idx = tl.program_id(0)
-    if seq_idx >= num_seqs:
-        return
+    # if seq_idx >= num_seqs:
+    #     return
     kv_head_idx = tl.program_id(1)
 
     if filter_by_query_len:
