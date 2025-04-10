@@ -9,7 +9,6 @@ import numpy as np
 import torch
 import torch.distributed
 import torch.nn as nn
-from triton_dejavu import global_cache_lock
 
 from vllm.attention import AttentionType, get_attn_backend
 from vllm.attention.layer import Attention
@@ -1437,7 +1436,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     for k, v in self.intermediate_tensors.items()
                 })
 
-            # # TODO: only if triton backend?        
+            # # TODO: only if triton backend?
             # dummy_attn_metadata = self.attn_metadata_builder.build(
             #     num_reqs=num_reqs,
             #     num_actual_tokens=num_tokens,
