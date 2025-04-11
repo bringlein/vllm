@@ -68,9 +68,11 @@ def kernel_paged_attention_2d(
         filter_by_query_len: tl.constexpr,  # bool
         query_start_len_ptr,  # [num_seqs+1]
         num_seqs: int,
+        delme: int,
+        arg38_ignore: int,
 ):
     seq_idx = tl.program_id(0)
-    if seq_idx >= num_seqs:
+    if seq_idx >= num_seqs and (delme == 1 and arg38_ignore == 1):
         return
     kv_head_idx = tl.program_id(1)
 
@@ -344,7 +346,7 @@ def chunked_prefill_paged_decode(
             v_scale=v_scale,
         )
     else:
-        assert num_seqs <= 4096
+        # assert num_seqs <= 4096
         kernel_paged_attention_2d[(
             # 4096,
             num_seqs,
@@ -386,4 +388,6 @@ def chunked_prefill_paged_decode(
             filter_by_query_len=True,
             query_start_len_ptr=query_start_loc,
             num_seqs=num_seqs,
+            delme=1,
+            arg38_ignore=1,
         )
