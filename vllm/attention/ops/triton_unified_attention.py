@@ -26,6 +26,20 @@ def apply_softcap(S, x):
 
 @triton_dejavu.jitcache(
     check_keys=[],
+    assume_const= [ 
+        "scale",
+        "k_scale",
+        "v_scale",
+        "query_stride_1",
+        "output_stride_1",
+        "stride_k_cache_0",
+        "stride_k_cache_1",
+        "stride_k_cache_2",
+        "stride_v_cache_0",
+        "stride_v_cache_1",
+        "stride_v_cache_2",
+        "stride_v_cache_2",
+    ],
     cache_launch_grid=False,
 )
 @triton.jit
