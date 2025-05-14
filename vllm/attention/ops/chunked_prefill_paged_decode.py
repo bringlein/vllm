@@ -37,7 +37,6 @@ def cdiv_fn(x, y):
         "stride_v_cache_0",
         "stride_v_cache_1",
         "stride_v_cache_2",
-        "stride_v_cache_2",
     ],
     cache_launch_grid=True,
 )
@@ -351,7 +350,8 @@ def chunked_prefill_paged_decode(
         #  Therefore, we assuem a maximum batch_size of 4096.
         assert num_seqs <= 4096
         kernel_paged_attention_2d[(
-            num_seqs,
+            # num_seqs,
+            4096,
             num_kv_heads,
         )](
             output_ptr=output,
