@@ -103,6 +103,7 @@ class TritonAttentionImpl:
         attn_type: AttentionType = AttentionType.DECODER,
         use_irope: bool = False,
     ) -> None:
+        print("using UNIFIED triton attention")
         if blocksparse_params is not None:
             raise ValueError(
                 "TritonAttention does not support block-sparse attention.")

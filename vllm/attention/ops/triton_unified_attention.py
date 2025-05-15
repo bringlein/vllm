@@ -10,7 +10,8 @@ import triton
 import triton.language as tl
 
 from vllm.logger import init_logger
-from vllm.triton_utils.jit_cache import jitcache
+# from vllm.triton_utils.jit_cache import jitcache
+from triton_dejavu import jit_cache as jitcache
 
 logger = init_logger(__name__)
 
@@ -30,6 +31,7 @@ def apply_softcap(S, x):
 
 @jitcache(
     check_keys=[],
+    check_specialization=['num_seqs'],
     assume_const=[
         "scale",
         "k_scale",
