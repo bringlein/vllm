@@ -18,7 +18,6 @@ from __future__ import annotations
 import copy
 import inspect
 import time
-from typing import List
 
 from triton import KernelInterface
 from triton import __version__ as triton_version
@@ -172,6 +171,8 @@ class JitCache(KernelInterface):
         cache_launch_grid=False,
         assume_const=None,
     ):
+        self.arg_names = arg_names
+        self.fn = fn
         if not envs.VLLM_TRITON_ENABLE_JITCACHE:
             # we are deactivated -> do nothing and set self.run
             #  to JitFunction.run
@@ -189,8 +190,6 @@ class JitCache(KernelInterface):
         logger.info_once("JITCache for Triton kernel '%s' is activated.",
                          fn_name)
 
-        self.arg_names = arg_names
-        self.fn = fn
         self.base_fn = fn
         while not inspect.isfunction(self.base_fn):
             self.base_fn = self.base_fn.fn
@@ -365,10 +364,10 @@ class JitCache(KernelInterface):
 
 
 def jitcache(
-    check_keys: List[str],
+    check_keys: list[str],
     cache_lock: CacheLock | None = None,
     cache_launch_grid: bool = False,
-    assume_const: List[str] | None = None,
+    assume_const: list[str] | None = None,
 ):
     """
     Decorator for caching a :code:`triton.jit`'d function.
