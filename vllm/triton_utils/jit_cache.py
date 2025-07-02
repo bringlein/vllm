@@ -18,6 +18,7 @@ from __future__ import annotations
 import inspect
 import time
 
+import nvtx
 from triton import KernelInterface
 from triton import __version__ as triton_version
 from triton.runtime.autotuner import OutOfResources
@@ -122,6 +123,7 @@ class PreparedKernel:
                 self.device,
             ))
 
+    @nvtx.annotate(message="JitCache: launching kernel", color="red")
     def __call__(self, *args, **kwargs):
         assert len(args) == 0
 
@@ -225,7 +227,7 @@ class JitCache(KernelInterface):
     def _get_prepared_kernel(self, *args, **kwargs) -> PreparedKernel:
         """
         more or less redo what JITFunction.run is doing
-        (c.f. triton/python/triton/runtime/jit.py:565)
+        (c.f. triton/python/triton/runtime/jit.py:525)
         """
 
         kwargs["warmup"] = True
@@ -242,7 +244,7 @@ class JitCache(KernelInterface):
                 non_const_arg_names.append(p.name)
         if any(x in self.check_keys for x in non_const_arg_names):
             raise RuntimeError(
-                f"[{__print_name__}] ERROR: check_keys must only contain"
+                f"[{__print_name__}] ERROR: check_keys must only contain "
                 "parameters marked as tl.constexpr (non-constants will be "
                 "updated in all cases).")
         if any(x in self.check_specialization for x in const_arg_names):
@@ -252,7 +254,7 @@ class JitCache(KernelInterface):
         if self.assume_const:
             if any(x in self.assume_const for x in const_arg_names):
                 raise RuntimeError(
-                    f"[{__print_name__}] ERROR: assume_const must only contain"
+                    f"[{__print_name__}] ERROR: assume_const must only contain "
                     "parameters NOT marked as tl.constexpr.")
             update_only_arg_names = [
                 arg_n for arg_n in non_const_arg_names
@@ -406,8 +408,8 @@ def jitcache(
     relaxed safety checks still hold for the particular application.
 
     The :code:`JitCache` checks which compiled version of a kernel to use
-    based on the mandatory :code:`check_keys` and :code:`check_specialization`
-    lists. The developer needs to select these arguments based on her/his
+    based on the mandatory :code:`check_keys` and :code:`check_specialization` 
+    lists. The developer needs to select these arguments based on her/his 
     knowledge of the application.
 
     If a :code:`CacheLock` is provided, then the :code:`JitCache` adds new
@@ -423,7 +425,7 @@ def jitcache(
                        the cache. Only types int, bool, float are supported.
     :type check_keys: list[str]
     :param check_specialization: The list of *non-constants* of type integer
-                                 that are subject to specialization
+                                 that are subject to specialization 
                                  (e.g. values of the parameter could be 1 or
                                  could be dividable by 16).
     :type check_specialization: list[str]

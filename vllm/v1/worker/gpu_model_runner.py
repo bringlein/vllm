@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 import numpy as np
+import nvtx
 import torch
 import torch.distributed
 import torch.nn as nn
@@ -1191,6 +1192,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                                                 dtype=torch.int32)
         return max_tokens_across_dp_cpu - num_tokens, num_tokens_after_padding
 
+    @nvtx.annotate(message="execute_model", color="green")
     @torch.inference_mode()
     def execute_model(
         self,

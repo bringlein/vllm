@@ -15,6 +15,7 @@ from logging import DEBUG
 from typing import Any, Callable, Optional, TypeVar, Union
 
 import msgspec
+import torch
 import zmq
 
 from vllm.config import ParallelConfig, VllmConfig
@@ -172,6 +173,8 @@ class EngineCore:
         elapsed = time.time() - start
         logger.info(("init engine (profile, create kv cache, "
                      "warmup model) took %.2f seconds"), elapsed)
+
+        torch.cuda.cudart().cudaProfilerStart()
         return num_gpu_blocks, num_cpu_blocks, scheduler_kv_cache_config
 
     def add_request(self, request: EngineCoreRequest):
