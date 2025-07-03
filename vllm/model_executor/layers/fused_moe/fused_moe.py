@@ -691,18 +691,16 @@ def get_moe_configs(
         applicable_name_part = config_file_path.split(",device")[1]
         all_applicable_files = [f for f in all_config_files if applicable_name_part in f]
         print(all_applicable_files)
-        available_E = []
-        available_N = []
-        for f in all_applicable_files:
-            # print(f.split("=")[1])
-            # print(f.split("=")[1].split(",N"))
-            e = int(f.split("E=")[1].split(",N=")[0])
-            available_E.append(e)
-            n = int(f.split("N=")[1].split(",device")[0])
-            available_N.append(n)
+        available_E = [int(f.split("E=")[1].split(",N=")[0]) for f in all_applicable_files]
+        available_N = [int(f.split("N=")[1].split(",device")[0]) for f in all_applicable_files]
+        available_E = list(set(available_E))
+        available_N = list(set(available_N))
         print(available_E)
         print(available_N)
         next_best_e = min(available_E, key=lambda x: abs(x - E))
+        # for N, it looks like the next LARGER is better, even if the difference is larger
+        # or not?
+        # available_N = [n for n in available_N if n > N]
         next_best_n = min(available_N, key=lambda x: abs(x - N))
         json_file_name = get_config_file_name(next_best_e, next_best_n, dtype, block_shape)
 
