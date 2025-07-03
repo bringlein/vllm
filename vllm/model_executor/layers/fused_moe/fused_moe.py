@@ -643,6 +643,8 @@ def get_config_file_name(E: int,
                          N: int,
                          dtype: Optional[str],
                          block_shape: Optional[list[int]] = None) -> str:
+    # E = 64
+    # N = 640
     device_name = current_platform.get_device_name().replace(" ", "_")
     dtype_selector = "" if not dtype else f",dtype={dtype}"
     block_shape_selector = ("" if not block_shape or not all(block_shape) else
@@ -681,6 +683,38 @@ def get_moe_configs(
                         config_file_path)
             # If a configuration has been found, return it
             return {int(key): val for key, val in json.load(f).items()}
+
+    if os.environ.get("NGL_USE_TRITON_CONFIG_HEURISTICS", "0") == "1":  # yes, will be replaced with propper vllm.envs
+        logger.warning("Config file not found at %s. Trying to find next best config.", config_file_path)
+        config_folder = os.path.join(os.path.dirname(os.path.realpath(__file__)), "configs")
+        all_config_files = [f for f in os.listdir(config_folder) if os.path.isfile(os.path.join(config_folder, f))]
+        applicable_name_part = config_file_path.split(",device")[1]
+        all_applicable_files = [f for f in all_config_files if applicable_name_part in f]
+        print(all_applicable_files)
+        available_E = []
+        available_N = []
+        for f in all_applicable_files:
+            # print(f.split("=")[1])
+            # print(f.split("=")[1].split(",N"))
+            e = int(f.split("E=")[1].split(",N=")[0])
+            available_E.append(e)
+            n = int(f.split("N=")[1].split(",device")[0])
+            available_N.append(n)
+        print(available_E)
+        print(available_N)
+        next_best_e = min(available_E, key=lambda x: abs(x - E))
+        next_best_n = min(available_N, key=lambda x: abs(x - N))
+        json_file_name = get_config_file_name(next_best_e, next_best_n, dtype, block_shape)
+
+        config_file_path = os.path.join(
+            os.path.dirname(os.path.realpath(__file__)), "configs", json_file_name)
+        if os.path.exists(config_file_path):
+            with open(config_file_path) as f:
+                logger.info("Using configuration from %s for MoE layer.",
+                            config_file_path)
+                # If a configuration has been found, return it
+                return {int(key): val for key, val in json.load(f).items()}
+        
 
     # If no optimized configuration is available, we will use the default
     # configuration
