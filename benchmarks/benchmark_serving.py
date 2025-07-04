@@ -889,6 +889,32 @@ def main(args: argparse.Namespace):
     gc.collect()
     gc.freeze()
 
+    if args.num_warmups > 0:
+        for i in range(args.num_warmups):
+            asyncio.run(
+                benchmark(
+                    backend=backend,
+                    api_url=api_url,
+                    base_url=base_url,
+                    model_id=model_id,
+                    model_name=model_name,
+                    tokenizer=tokenizer,
+                    input_requests=input_requests,
+                    logprobs=args.logprobs,
+                    request_rate=args.request_rate,
+                    burstiness=args.burstiness,
+                    disable_tqdm=args.disable_tqdm,
+                    profile=args.profile,
+                    selected_percentile_metrics=args.percentile_metrics.split(","),
+                    selected_percentiles=[float(p) for p in args.metric_percentiles.split(",")],
+                    ignore_eos=args.ignore_eos,
+                    goodput_config_dict=goodput_config_dict,
+                    max_concurrency=args.max_concurrency,
+                    lora_modules=args.lora_modules,
+                    extra_body=sampling_params,
+                )
+            )
+
     benchmark_result = asyncio.run(
         benchmark(
             backend=backend,
@@ -1064,6 +1090,12 @@ def create_argument_parser():
         type=int,
         default=1000,
         help="Number of prompts to process.",
+    )
+    parser.add_argument(
+        "--num-warmups",
+        type=int,
+        default=0,
+        help="Number of iterations as warmup",
     )
     parser.add_argument(
         "--logprobs",

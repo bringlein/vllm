@@ -75,7 +75,7 @@ def prefill_heuristics_2d_BLOCK_N(MAX_SEQ_Q, MAX_SEQ_K):
         if MAX_SEQ_Q <= 384:
             if 96 < MAX_SEQ_K <= 192 and MAX_SEQ_Q <= 96:
                 BLOCK_N = 128
-            elif MAX_SEQ_K > 384:
+            elif 192 < MAX_SEQ_K <= 384:
                 BLOCK_N = 256
             else:
                 BLOCK_N = 32
