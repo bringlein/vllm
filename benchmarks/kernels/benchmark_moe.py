@@ -592,6 +592,12 @@ def main(args: argparse.Namespace):
         intermediate_size = config.intermediate_size
         shard_intermediate_size = 2 * intermediate_size // args.tp_size
 
+
+    print("E: ", E)
+    print("topk: ", topk)
+    print("intermediate_size: ", intermediate_size)
+    print("shard_intermediate_size: ", shard_intermediate_size)
+
     hidden_size = config.hidden_size
     dtype = torch.float16 if current_platform.is_rocm() else config.torch_dtype
     use_fp8_w8a8 = args.dtype == "fp8_w8a8"
@@ -600,24 +606,10 @@ def main(args: argparse.Namespace):
 
     if args.batch_size is None:
         batch_sizes = [
-            1,
-            2,
-            4,
+        #     1,
             8,
-            16,
-            24,
-            32,
-            48,
-            64,
-            96,
-            128,
-            256,
-            512,
-            1024,
-            1536,
-            2048,
-            3072,
-            4096,
+        #     32,
+        #     64,
         ]
     else:
         batch_sizes = [args.batch_size]

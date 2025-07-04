@@ -643,8 +643,6 @@ def get_config_file_name(E: int,
                          N: int,
                          dtype: Optional[str],
                          block_shape: Optional[list[int]] = None) -> str:
-    # E = 64
-    # N = 640
     device_name = current_platform.get_device_name().replace(" ", "_")
     dtype_selector = "" if not dtype else f",dtype={dtype}"
     block_shape_selector = ("" if not block_shape or not all(block_shape) else
@@ -704,6 +702,7 @@ def get_moe_configs(
         next_best_n = min(available_N, key=lambda x: abs(x - N))
         json_file_name = get_config_file_name(next_best_e, next_best_n, dtype, block_shape)
 
+        # TODO: dedublicate
         config_file_path = os.path.join(
             os.path.dirname(os.path.realpath(__file__)), "configs", json_file_name)
         if os.path.exists(config_file_path):
