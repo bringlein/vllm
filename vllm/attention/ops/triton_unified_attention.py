@@ -629,7 +629,7 @@ def unified_attention(
     # if batch contains a prefill
     if max_seqlen_q > 1 or total_num_q_blocks * num_kv_heads > 128:
 
-        BLOCK_N = 32 if max_seqlen_k <= 64 and avg_seqlen_q >= 4096 else 64
+        BLOCK_N = 32 if max_seqlen_k <= 64 or avg_seqlen_q <= 4096 else 64
 
         grid = lambda META: (q.shape[0] // (META[
             'BLOCK_M'] // num_queries_per_kv) + num_seqs, num_kv_heads)
