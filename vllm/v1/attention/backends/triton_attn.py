@@ -46,6 +46,8 @@ class TritonAttentionMetadata:
     seq_lens: torch.Tensor
     block_table: torch.Tensor
     slot_mapping: torch.Tensor
+    
+    avg_query_len: int
 
     # For cascade attention.
     use_cascade: bool
@@ -66,6 +68,7 @@ class TritonAttentionMetadata:
         local_block_table: torch.Tensor
         local_max_query_len: int
         local_max_seq_len: int
+        local_avg_query_len: int
         local_scheduler_metadata: Optional[torch.Tensor]
 
     local_attn_metadata: Optional[LocalAttentionMetadata] = None
@@ -105,6 +108,8 @@ class TritonAttentionMetadataBuilder(
         seq_lens = common_attn_metadata.seq_lens
         block_table = self.block_table
         block_table_tensor = block_table.get_device_tensor()[:num_reqs]
+        
+        avg_query_len = int(self.runner.query_start_loc_np[num_reqs]/num_reqs)
 
         block_table.slot_mapping[:num_actual_tokens].copy_(
             block_table.slot_mapping_cpu[:num_actual_tokens],
@@ -131,6 +136,7 @@ class TritonAttentionMetadataBuilder(
             local_seqused_k = torch.from_numpy(virt_k_seqlens_np).to(
                 self.runner.device, non_blocking=True)
             local_max_query_len = seqlens_q_local_np.max()
+            local_avg_query_len = int(seqlens_q_local_np[num_reqs]/num_reqs)
             local_max_seq_len = virt_k_seqlens_np.max()
 
             local_attn_metadata = TritonAttentionMetadata \
@@ -140,6 +146,7 @@ class TritonAttentionMetadataBuilder(
                 local_block_table=virt_block_table_tensor,
                 local_max_query_len=local_max_query_len,
                 local_max_seq_len=local_max_seq_len,
+                local_avg_query_len=local_avg_query_len,
                 local_scheduler_metadata=None,
             )
 
@@ -177,6 +184,7 @@ class TritonAttentionMetadataBuilder(
             suffix_kv_lens=suffix_kv_lens,
             local_attn_metadata=local_attn_metadata,
             prefix_scheduler_metadata=prefix_scheduler_metadata,
+            avg_query_len=avg_query_len,
         )
         return attn_metadata
 
@@ -396,12 +404,14 @@ class TritonAttentionImpl(AttentionImpl):
             max_seqlen_q = local_metadata.local_max_query_len
             max_seqlen_k = local_metadata.local_max_seq_len
             block_table = local_metadata.local_block_table
+            avg_seqlen_q = local_metadata.local_avg_query_len
         else:
             cu_seqlens_q = attn_metadata.query_start_loc
             seqused_k = attn_metadata.seq_lens
             max_seqlen_q = attn_metadata.max_query_len
             max_seqlen_k = attn_metadata.max_seq_len
             block_table = attn_metadata.block_table
+            avg_seqlen_q = attn_metadata.avg_query_len
 
         if use_prefill_decode_attn:
             # Compute attention and update output up to `num_actual_tokens`.
@@ -435,6 +445,7 @@ class TritonAttentionImpl(AttentionImpl):
                 max_seqlen_q=max_seqlen_q,
                 seqused_k=seqused_k,
                 max_seqlen_k=max_seqlen_k,
+                avg_seqlen_q=avg_seqlen_q,
                 softmax_scale=self.scale,
                 causal=True,
                 alibi_slopes=self.alibi_slopes,
