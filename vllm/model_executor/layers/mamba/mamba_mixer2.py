@@ -33,9 +33,9 @@ from vllm.model_executor.model_loader.weight_utils import (
     LoaderFunction, composed_weight_loader, sharded_weight_loader)
 from vllm.model_executor.models.mamba_cache import MambaCacheParams
 from vllm.model_executor.utils import set_weight_attrs
-from vllm.v1.attention.backends.mamba_attn import Mamba2AttentionMetadata
-from vllm.utils import direct_register_custom_op
 from vllm.platforms import current_platform
+from vllm.utils import direct_register_custom_op
+from vllm.v1.attention.backends.mamba_attn import Mamba2AttentionMetadata
 
 # Added by the IBM Team, 2024
 
@@ -449,7 +449,6 @@ class MambaMixer2(MambaBase, nn.Module):
             mup_vector,
         )
 
-
     def get_state_shape(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
         return get_mamba_state_shape(
             intermediate_size=self.intermediate_size,
@@ -460,6 +459,7 @@ class MambaMixer2(MambaBase, nn.Module):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel_size,
         )
+
 
 def tpa_test(
     hidden_states: torch.Tensor,
@@ -529,8 +529,7 @@ def tpa_test(
         # V1 profile run
         hidden_states_B_C = (hidden_states_B_C.transpose(
             0, 1).clone().transpose(0, 1)).contiguous()
-        hidden_states, _B, _C = split_hidden_states_B_C_fn(
-            hidden_states_B_C)
+        hidden_states, _B, _C = split_hidden_states_B_C_fn(hidden_states_B_C)
         hidden_states = self.norm(hidden_states, gate)
         out, _ = self.out_proj(hidden_states)
         return out
@@ -582,8 +581,7 @@ def tpa_test(
             [num_prefills, num_decodes],
             dim=0,
         )
-        query_start_loc_p = (attn_metadata.query_start_loc[:num_prefills +
-                                                           1]
+        query_start_loc_p = (attn_metadata.query_start_loc[:num_prefills + 1]
                              if has_prefill else None)
 
     ssd_output_list = []
@@ -596,8 +594,8 @@ def tpa_test(
         x = hidden_states_B_C_p.transpose(
             0, 1)  # this is the form that causal-conv see
         if mamba2_metadata.cu_seqlen is None:
-            mamba2_metadata = update_metadata(
-                x, attn_metadata.query_start_loc, mamba2_metadata)
+            mamba2_metadata = update_metadata(x, attn_metadata.query_start_loc,
+                                              mamba2_metadata)
         hidden_states_B_C_p = causal_conv1d_fn(
             x,
             conv_weights,
@@ -626,10 +624,8 @@ def tpa_test(
                                  self.head_dim),
             dt_p.unsqueeze(0),
             self.A,
-            B_p.view(1, num_prefill_tokens, self.n_groups // self.tp_size,
-                     -1),
-            C_p.view(1, num_prefill_tokens, self.n_groups // self.tp_size,
-                     -1),
+            B_p.view(1, num_prefill_tokens, self.n_groups // self.tp_size, -1),
+            C_p.view(1, num_prefill_tokens, self.n_groups // self.tp_size, -1),
             chunk_size=chunk_size,
             D=self.D,
             z=None,
@@ -675,8 +671,9 @@ def tpa_test(
         D_d = self.D[:, None, ...].expand(-1, self.head_dim)
         B_d = B_d.view(-1, n_groups, B_d.shape[1] // n_groups)
         C_d = C_d.view(-1, n_groups, C_d.shape[1] // n_groups)
-        hidden_states_d = hidden_states_d.view(
-            -1, self.num_heads // self.tp_size, self.head_dim)
+        hidden_states_d = hidden_states_d.view(-1,
+                                               self.num_heads // self.tp_size,
+                                               self.head_dim)
 
         # - the hidden is reshaped into (bs, num_heads, head_dim)
         # - mamba_cache_params.ssm_state's slots will be selected
@@ -728,6 +725,7 @@ def tpa_test_fake(
 
     print("tpa_test_fake")
     raise
+
 
 direct_register_custom_op(
     op_name="mamba_mixer2",
