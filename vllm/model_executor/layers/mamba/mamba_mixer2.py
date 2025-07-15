@@ -34,6 +34,8 @@ from vllm.model_executor.model_loader.weight_utils import (
 from vllm.model_executor.models.mamba_cache import MambaCacheParams
 from vllm.model_executor.utils import set_weight_attrs
 from vllm.v1.attention.backends.mamba_attn import Mamba2AttentionMetadata
+from vllm.utils import direct_register_custom_op
+from vllm.platforms import current_platform
 
 # Added by the IBM Team, 2024
 
@@ -209,8 +211,8 @@ def mamba_v2_sharded_weight_loader(
 
 
 # Adapted from transformers.models.mamba.modeling_mamba.MambaMixer
-@CustomOp.register("mamba_mixer2")
-class MambaMixer2(MambaBase, CustomOp):
+#@CustomOp.register("mamba_mixer2")
+class MambaMixer2(MambaBase, nn.Module):
     """
     Compute ∆, A, B, C, and D the state space parameters and compute
     the `contextualized_states`. A, D are input independent
@@ -421,280 +423,32 @@ class MambaMixer2(MambaBase, CustomOp):
 
         self.prefix = prefix
 
-    def forward_native(
-        self,
-        hidden_states: torch.Tensor,
-        conv_state: torch.Tensor,
-        ssm_state: torch.Tensor,
-    ):
-        pass
+        self.use_direct_call = False
 
-    def forward_cuda(
+    def forward_native(
         self,
         hidden_states: torch.Tensor,
         mamba_cache_params: MambaCacheParams,
         mamba2_metadata: Mamba2Metadata,
         mup_vector: Optional[torch.Tensor] = None,
     ):
-        forward_context = get_forward_context()
-        # mamba2_metadata contains metadata necessary for the mamba2 triton
-        # kernels to operate in continuous batching and in chunked prefill
-        # modes; they are computed at top-level model forward since they
-        # stay the same and reused for all mamba layers in the same iteration
-        attn_metadata: AttentionMetadata = forward_context.attn_metadata
-        if envs.VLLM_USE_V1:
-            if attn_metadata is not None:
-                assert isinstance(attn_metadata, dict)
-                attn_metadata = attn_metadata[self.prefix]
-                mamba2_metadata = attn_metadata
-                assert isinstance(attn_metadata, Mamba2AttentionMetadata)
-                self_kv_cache = self.kv_cache[forward_context.virtual_engine]
-                # conv_state = (..., dim, width-1) yet contiguous along 'dim'
-                conv_state = self_kv_cache[0].transpose(-1, -2)
-                ssm_state = self_kv_cache[1]
-                state_indices_tensor = attn_metadata.state_indices_tensor
-                has_initial_states_p = attn_metadata.has_initial_states
-                prep_initial_states = attn_metadata.prep_initial_states
-                chunk_size = attn_metadata.chunk_size
-                seq_idx_p = attn_metadata.seq_idx
-                chunk_indices_p = attn_metadata.chunk_indices
-                chunk_offsets_p = attn_metadata.chunk_offsets
-        else:
-            conv_state = mamba_cache_params.conv_state
-            ssm_state = mamba_cache_params.ssm_state
-            state_indices_tensor = mamba_cache_params.state_indices_tensor
-            has_initial_states_p = mamba2_metadata.has_initial_states
-            prep_initial_states = mamba2_metadata.prep_initial_states
-            chunk_size = mamba2_metadata.chunk_size
-            seq_idx_p = mamba2_metadata.seq_idx
-            chunk_indices_p = mamba2_metadata.chunk_indices
-            chunk_offsets_p = mamba2_metadata.chunk_offsets
+        print("forward native?")
+        pass
 
-        groups_time_state_size = self.n_groups * self.ssm_state_size
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        mamba_cache_params: MambaCacheParams,
+        mamba2_metadata: Mamba2Metadata,
+        mup_vector: Optional[torch.Tensor] = None,
+    ):
 
-        # 1. Gated MLP's linear projection
-        projected_states, _ = self.in_proj(hidden_states)
-
-        if mup_vector is not None:
-            projected_states = projected_states * mup_vector
-
-        gate, hidden_states_B_C, dt = torch.split(
-            projected_states,
-            [
-                self.intermediate_size // self.tp_size,
-                self.conv_dim // self.tp_size,
-                self.num_heads // self.tp_size,
-            ],
-            dim=-1,
+        return torch.ops.vllm.mamba_mixer2(
+            hidden_states,
+            self.prefix,
+            mup_vector,
         )
 
-        conv_weights = self.conv1d.weight.view(self.conv1d.weight.size(0),
-                                               self.conv1d.weight.size(2))
-
-        # - get hidden_states, B and C after depthwise convolution.
-        split_hidden_states_B_C_fn = lambda hidden_states_B_C: torch.split(
-            hidden_states_B_C,
-            [
-                self.intermediate_size // self.tp_size,
-                groups_time_state_size // self.tp_size,
-                groups_time_state_size // self.tp_size,
-            ],
-            dim=-1,
-        )
-
-        if envs.VLLM_USE_V1 and attn_metadata is None:
-            # V1 profile run
-            hidden_states_B_C = (hidden_states_B_C.transpose(
-                0, 1).clone().transpose(0, 1)).contiguous()
-            hidden_states, _B, _C = split_hidden_states_B_C_fn(
-                hidden_states_B_C)
-            hidden_states = self.norm(hidden_states, gate)
-            out, _ = self.out_proj(hidden_states)
-            return out
-
-        num_prefills = attn_metadata.num_prefills  # request count
-        num_decodes = attn_metadata.num_decode_tokens  # token count (=request)
-        num_prefill_tokens = attn_metadata.num_prefill_tokens  # token count
-        has_prefill = num_prefills > 0
-        has_decode = num_decodes > 0
-
-        # NOTE: V0 put prefill before decode, v1 puts decode before prefill
-        # Separate prefill and decode by splitting varlen input
-        # Split along token dimension
-        # NOTE: V0 put prefill before decode, v1 puts decode before prefill
-        if envs.VLLM_USE_V1:
-            hidden_states_B_C_d, hidden_states_B_C_p = torch.split(
-                hidden_states_B_C,
-                [num_decodes, num_prefill_tokens],
-                dim=0,
-            )
-            dt_d, dt_p = torch.split(
-                dt,
-                [num_decodes, num_prefill_tokens],
-                dim=0,
-            )
-            # Split along batch dimension
-            state_indices_tensor_d, state_indices_tensor_p = torch.split(
-                state_indices_tensor,
-                [num_decodes, num_prefills],
-                dim=0,
-            )
-            query_start_loc_p = (
-                attn_metadata.query_start_loc[-num_prefills - 1:] -
-                num_decodes if has_prefill else None)
-        else:
-            hidden_states_B_C_p, hidden_states_B_C_d = torch.split(
-                hidden_states_B_C,
-                [num_prefill_tokens, num_decodes],
-                dim=0,
-            )
-            dt_p, dt_d = torch.split(
-                dt,
-                [num_prefill_tokens, num_decodes],
-                dim=0,
-            )
-            # Split along batch dimension
-            state_indices_tensor_p, state_indices_tensor_d = torch.split(
-                state_indices_tensor,
-                [num_prefills, num_decodes],
-                dim=0,
-            )
-            query_start_loc_p = (attn_metadata.query_start_loc[:num_prefills +
-                                                               1]
-                                 if has_prefill else None)
-
-        ssd_output_list = []
-
-        # Process prefill requests
-        if has_prefill:
-            # 2. Convolution sequence transformation
-            # - "cache_indices" updates the conv_state cache in positions
-            #   pointed to by "state_indices_tensor"
-            x = hidden_states_B_C_p.transpose(
-                0, 1)  # this is the form that causal-conv see
-            if mamba2_metadata.cu_seqlen is None:
-                mamba2_metadata = update_metadata(
-                    x, attn_metadata.query_start_loc, mamba2_metadata)
-            hidden_states_B_C_p = causal_conv1d_fn(
-                x,
-                conv_weights,
-                self.conv1d.bias,
-                activation=self.activation,
-                conv_states=conv_state,
-                has_initial_state=has_initial_states_p,
-                cache_indices=state_indices_tensor_p,
-                query_start_loc=query_start_loc_p).transpose(
-                    0, 1)[:num_prefill_tokens]
-
-            hidden_states_p, B_p, C_p = split_hidden_states_B_C_fn(
-                hidden_states_B_C_p)
-
-            # 3. State Space Model sequence transformation
-            initial_states = None
-            if (has_initial_states_p is not None and prep_initial_states):
-                # making a copy of the states
-                initial_states = torch.where(
-                    has_initial_states_p[:, None, None, None],
-                    ssm_state[state_indices_tensor_p], 0)
-
-            scan_output, varlen_state = mamba_chunk_scan_combined(
-                hidden_states_p.view(1, num_prefill_tokens,
-                                     self.num_heads // self.tp_size,
-                                     self.head_dim),
-                dt_p.unsqueeze(0),
-                self.A,
-                B_p.view(1, num_prefill_tokens, self.n_groups // self.tp_size,
-                         -1),
-                C_p.view(1, num_prefill_tokens, self.n_groups // self.tp_size,
-                         -1),
-                chunk_size=chunk_size,
-                D=self.D,
-                z=None,
-                dt_bias=self.dt_bias,
-                seq_idx=seq_idx_p,
-                chunk_indices=chunk_indices_p,
-                chunk_offsets=chunk_offsets_p,
-                cu_seqlens=query_start_loc_p,
-                initial_states=initial_states,
-                return_varlen_states=True,
-                return_final_states=False,
-                dt_softplus=True,
-                dt_limit=(0.0, float("inf")),
-            )
-
-            # update ssm states
-            # - varlen state is a (num_prefills, nheads, headdim, dstate) tensor
-            ssm_state[state_indices_tensor_p] = varlen_state
-
-            # - reshape
-            ssd_output_list.append(scan_output.view(num_prefill_tokens, -1))
-
-        # Process decode requests
-        if has_decode:
-            # 2. Convolution sequence transformation
-            hidden_states_B_C_d = causal_conv1d_update(
-                hidden_states_B_C_d,
-                conv_state,
-                conv_weights,
-                self.conv1d.bias,
-                self.activation,
-                conv_state_indices=state_indices_tensor_d)
-
-            hidden_states_d, B_d, C_d = split_hidden_states_B_C_fn(
-                hidden_states_B_C_d)
-
-            # 3. State Space Model sequence transformation
-            n_groups = self.n_groups // self.tp_size
-            A_d = self.A[:, None, ...][:, :, None].expand(
-                -1, self.head_dim, self.ssm_state_size).to(dtype=torch.float32)
-            dt_d = dt_d[:, :, None].expand(-1, -1, self.head_dim)
-            dt_bias = self.dt_bias[:, None, ...].expand(-1, self.head_dim)
-            D_d = self.D[:, None, ...].expand(-1, self.head_dim)
-            B_d = B_d.view(-1, n_groups, B_d.shape[1] // n_groups)
-            C_d = C_d.view(-1, n_groups, C_d.shape[1] // n_groups)
-            hidden_states_d = hidden_states_d.view(
-                -1, self.num_heads // self.tp_size, self.head_dim)
-
-            # - the hidden is reshaped into (bs, num_heads, head_dim)
-            # - mamba_cache_params.ssm_state's slots will be selected
-            #   using state_indices_tensor_d
-
-            hidden_states_d = selective_state_update(
-                ssm_state,
-                hidden_states_d,
-                dt_d,
-                A_d,
-                B_d,
-                C_d,
-                D_d,
-                z=None,
-                dt_bias=dt_bias,
-                dt_softplus=True,
-                state_batch_indices=state_indices_tensor_d,
-            )
-
-            if envs.VLLM_USE_V1:
-                ssd_output_list.insert(
-                    0,
-                    hidden_states_d.view(-1, (self.num_heads // self.tp_size) *
-                                         self.head_dim))
-            else:
-                ssd_output_list.append(
-                    hidden_states_d.view(-1, (self.num_heads // self.tp_size) *
-                                         self.head_dim))
-
-        # Merge prefill and decode outputs before passing to gated MLP
-        hidden_states = torch.vstack(ssd_output_list)
-
-        # 4. gated MLP
-        # GatedRMSNorm internally applying SiLU to the gate
-        # SiLU is applied internally before normalization, unlike standard
-        # norm usage
-        hidden_states = self.norm(hidden_states, gate)
-
-        # 5. Final linear projection
-        out, _ = self.out_proj(hidden_states)
-        return out
 
     def get_state_shape(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
         return get_mamba_state_shape(
@@ -706,3 +460,279 @@ class MambaMixer2(MambaBase, CustomOp):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel_size,
         )
+
+def tpa_test(
+    hidden_states: torch.Tensor,
+    layer_name: str,
+    mup_vector: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+
+    forward_context = get_forward_context()
+    # mamba2_metadata contains metadata necessary for the mamba2 triton
+    # kernels to operate in continuous batching and in chunked prefill
+    # modes; they are computed at top-level model forward since they
+    # stay the same and reused for all mamba layers in the same iteration
+    attn_metadata: AttentionMetadata = forward_context.attn_metadata
+
+    self = forward_context.no_compile_layers[layer_name]
+
+    if attn_metadata is not None:
+        assert isinstance(attn_metadata, dict)
+        attn_metadata = attn_metadata[self.prefix]
+        mamba2_metadata = attn_metadata
+        assert isinstance(attn_metadata, Mamba2AttentionMetadata)
+        self_kv_cache = self.kv_cache[forward_context.virtual_engine]
+        # conv_state = (..., dim, width-1) yet contiguous along 'dim'
+        conv_state = self_kv_cache[0].transpose(-1, -2)
+        ssm_state = self_kv_cache[1]
+        state_indices_tensor = attn_metadata.state_indices_tensor
+        has_initial_states_p = attn_metadata.has_initial_states
+        prep_initial_states = attn_metadata.prep_initial_states
+        chunk_size = attn_metadata.chunk_size
+        seq_idx_p = attn_metadata.seq_idx
+        chunk_indices_p = attn_metadata.chunk_indices
+        chunk_offsets_p = attn_metadata.chunk_offsets
+
+    groups_time_state_size = self.n_groups * self.ssm_state_size
+
+    # 1. Gated MLP's linear projection
+    projected_states, _ = self.in_proj(hidden_states)
+
+    if mup_vector is not None:
+        projected_states = projected_states * mup_vector
+
+    gate, hidden_states_B_C, dt = torch.split(
+        projected_states,
+        [
+            self.intermediate_size // self.tp_size,
+            self.conv_dim // self.tp_size,
+            self.num_heads // self.tp_size,
+        ],
+        dim=-1,
+    )
+
+    conv_weights = self.conv1d.weight.view(self.conv1d.weight.size(0),
+                                           self.conv1d.weight.size(2))
+
+    # - get hidden_states, B and C after depthwise convolution.
+    split_hidden_states_B_C_fn = lambda hidden_states_B_C: torch.split(
+        hidden_states_B_C,
+        [
+            self.intermediate_size // self.tp_size,
+            groups_time_state_size // self.tp_size,
+            groups_time_state_size // self.tp_size,
+        ],
+        dim=-1,
+    )
+
+    if attn_metadata is None:
+        # V1 profile run
+        hidden_states_B_C = (hidden_states_B_C.transpose(
+            0, 1).clone().transpose(0, 1)).contiguous()
+        hidden_states, _B, _C = split_hidden_states_B_C_fn(
+            hidden_states_B_C)
+        hidden_states = self.norm(hidden_states, gate)
+        out, _ = self.out_proj(hidden_states)
+        return out
+
+    num_prefills = attn_metadata.num_prefills  # request count
+    num_decodes = attn_metadata.num_decode_tokens  # token count (=request)
+    num_prefill_tokens = attn_metadata.num_prefill_tokens  # token count
+    has_prefill = num_prefills > 0
+    has_decode = num_decodes > 0
+
+    # NOTE: V0 put prefill before decode, v1 puts decode before prefill
+    # Separate prefill and decode by splitting varlen input
+    # Split along token dimension
+    # NOTE: V0 put prefill before decode, v1 puts decode before prefill
+    if envs.VLLM_USE_V1:
+        hidden_states_B_C_d, hidden_states_B_C_p = torch.split(
+            hidden_states_B_C,
+            [num_decodes, num_prefill_tokens],
+            dim=0,
+        )
+        dt_d, dt_p = torch.split(
+            dt,
+            [num_decodes, num_prefill_tokens],
+            dim=0,
+        )
+        # Split along batch dimension
+        state_indices_tensor_d, state_indices_tensor_p = torch.split(
+            state_indices_tensor,
+            [num_decodes, num_prefills],
+            dim=0,
+        )
+        query_start_loc_p = (
+            attn_metadata.query_start_loc[-num_prefills - 1:] -
+            num_decodes if has_prefill else None)
+    else:
+        hidden_states_B_C_p, hidden_states_B_C_d = torch.split(
+            hidden_states_B_C,
+            [num_prefill_tokens, num_decodes],
+            dim=0,
+        )
+        dt_p, dt_d = torch.split(
+            dt,
+            [num_prefill_tokens, num_decodes],
+            dim=0,
+        )
+        # Split along batch dimension
+        state_indices_tensor_p, state_indices_tensor_d = torch.split(
+            state_indices_tensor,
+            [num_prefills, num_decodes],
+            dim=0,
+        )
+        query_start_loc_p = (attn_metadata.query_start_loc[:num_prefills +
+                                                           1]
+                             if has_prefill else None)
+
+    ssd_output_list = []
+
+    # Process prefill requests
+    if has_prefill:
+        # 2. Convolution sequence transformation
+        # - "cache_indices" updates the conv_state cache in positions
+        #   pointed to by "state_indices_tensor"
+        x = hidden_states_B_C_p.transpose(
+            0, 1)  # this is the form that causal-conv see
+        if mamba2_metadata.cu_seqlen is None:
+            mamba2_metadata = update_metadata(
+                x, attn_metadata.query_start_loc, mamba2_metadata)
+        hidden_states_B_C_p = causal_conv1d_fn(
+            x,
+            conv_weights,
+            self.conv1d.bias,
+            activation=self.activation,
+            conv_states=conv_state,
+            has_initial_state=has_initial_states_p,
+            cache_indices=state_indices_tensor_p,
+            query_start_loc=query_start_loc_p).transpose(
+                0, 1)[:num_prefill_tokens]
+
+        hidden_states_p, B_p, C_p = split_hidden_states_B_C_fn(
+            hidden_states_B_C_p)
+
+        # 3. State Space Model sequence transformation
+        initial_states = None
+        if (has_initial_states_p is not None and prep_initial_states):
+            # making a copy of the states
+            initial_states = torch.where(
+                has_initial_states_p[:, None, None, None],
+                ssm_state[state_indices_tensor_p], 0)
+
+        scan_output, varlen_state = mamba_chunk_scan_combined(
+            hidden_states_p.view(1, num_prefill_tokens,
+                                 self.num_heads // self.tp_size,
+                                 self.head_dim),
+            dt_p.unsqueeze(0),
+            self.A,
+            B_p.view(1, num_prefill_tokens, self.n_groups // self.tp_size,
+                     -1),
+            C_p.view(1, num_prefill_tokens, self.n_groups // self.tp_size,
+                     -1),
+            chunk_size=chunk_size,
+            D=self.D,
+            z=None,
+            dt_bias=self.dt_bias,
+            seq_idx=seq_idx_p,
+            chunk_indices=chunk_indices_p,
+            chunk_offsets=chunk_offsets_p,
+            cu_seqlens=query_start_loc_p,
+            initial_states=initial_states,
+            return_varlen_states=True,
+            return_final_states=False,
+            dt_softplus=True,
+            dt_limit=(0.0, float("inf")),
+        )
+
+        # update ssm states
+        # - varlen state is a (num_prefills, nheads, headdim, dstate) tensor
+        ssm_state[state_indices_tensor_p] = varlen_state
+
+        # - reshape
+        ssd_output_list.append(scan_output.view(num_prefill_tokens, -1))
+
+    # Process decode requests
+    if has_decode:
+        # 2. Convolution sequence transformation
+        hidden_states_B_C_d = causal_conv1d_update(
+            hidden_states_B_C_d,
+            conv_state,
+            conv_weights,
+            self.conv1d.bias,
+            self.activation,
+            conv_state_indices=state_indices_tensor_d)
+
+        hidden_states_d, B_d, C_d = split_hidden_states_B_C_fn(
+            hidden_states_B_C_d)
+
+        # 3. State Space Model sequence transformation
+        n_groups = self.n_groups // self.tp_size
+        A_d = self.A[:, None, ...][:, :, None].expand(
+            -1, self.head_dim, self.ssm_state_size).to(dtype=torch.float32)
+        dt_d = dt_d[:, :, None].expand(-1, -1, self.head_dim)
+        dt_bias = self.dt_bias[:, None, ...].expand(-1, self.head_dim)
+        D_d = self.D[:, None, ...].expand(-1, self.head_dim)
+        B_d = B_d.view(-1, n_groups, B_d.shape[1] // n_groups)
+        C_d = C_d.view(-1, n_groups, C_d.shape[1] // n_groups)
+        hidden_states_d = hidden_states_d.view(
+            -1, self.num_heads // self.tp_size, self.head_dim)
+
+        # - the hidden is reshaped into (bs, num_heads, head_dim)
+        # - mamba_cache_params.ssm_state's slots will be selected
+        #   using state_indices_tensor_d
+
+        hidden_states_d = selective_state_update(
+            ssm_state,
+            hidden_states_d,
+            dt_d,
+            A_d,
+            B_d,
+            C_d,
+            D_d,
+            z=None,
+            dt_bias=dt_bias,
+            dt_softplus=True,
+            state_batch_indices=state_indices_tensor_d,
+        )
+
+        if envs.VLLM_USE_V1:
+            ssd_output_list.insert(
+                0,
+                hidden_states_d.view(-1, (self.num_heads // self.tp_size) *
+                                     self.head_dim))
+        else:
+            ssd_output_list.append(
+                hidden_states_d.view(-1, (self.num_heads // self.tp_size) *
+                                     self.head_dim))
+
+    # Merge prefill and decode outputs before passing to gated MLP
+    hidden_states = torch.vstack(ssd_output_list)
+
+    # 4. gated MLP
+    # GatedRMSNorm internally applying SiLU to the gate
+    # SiLU is applied internally before normalization, unlike standard
+    # norm usage
+    hidden_states = self.norm(hidden_states, gate)
+
+    # 5. Final linear projection
+    out, _ = self.out_proj(hidden_states)
+    return out
+
+
+def tpa_test_fake(
+    hidden_state: torch.Tensor,
+    layer_name: str,
+    mup_vector: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+
+    print("tpa_test_fake")
+    raise
+
+direct_register_custom_op(
+    op_name="mamba_mixer2",
+    op_func=tpa_test,
+    mutates_args=[],
+    fake_impl=tpa_test_fake,
+    dispatch_key=current_platform.dispatch_key,
+)
