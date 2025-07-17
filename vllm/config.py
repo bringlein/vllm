@@ -4355,6 +4355,7 @@ class CompilationConfig:
                 "vllm.unified_attention_with_output",
                 "vllm.mamba_mixer2",
             ]
+            print("self.splitting_ops: ", self.splitting_ops)
 
 
 @config

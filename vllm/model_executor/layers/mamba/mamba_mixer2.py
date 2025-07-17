@@ -543,6 +543,8 @@ class MambaMixer2(MambaBase, nn.Module):
         num_prefill_tokens = attn_metadata.num_prefill_tokens  # token count
         has_prefill = num_prefills > 0
         has_decode = num_decodes > 0
+        num_actual_tokens = num_prefill_tokens + num_decodes
+
 
         # NOTE: V0 put prefill before decode, v1 puts decode before prefill
         # Separate prefill and decode by splitting varlen input
@@ -550,18 +552,18 @@ class MambaMixer2(MambaBase, nn.Module):
         # NOTE: V0 put prefill before decode, v1 puts decode before prefill
         if envs.VLLM_USE_V1:
             hidden_states_B_C_d, hidden_states_B_C_p = torch.split(
-                hidden_states_B_C,
+                hidden_states_B_C[:num_actual_tokens],
                 [num_decodes, num_prefill_tokens],
                 dim=0,
             )
             dt_d, dt_p = torch.split(
-                dt,
+                dt[:num_actual_tokens],
                 [num_decodes, num_prefill_tokens],
                 dim=0,
             )
             # Split along batch dimension
             state_indices_tensor_d, state_indices_tensor_p = torch.split(
-                state_indices_tensor,
+                state_indices_tensor[:num_actual_tokens],
                 [num_decodes, num_prefills],
                 dim=0,
             )
@@ -722,7 +724,7 @@ class MambaMixer2(MambaBase, nn.Module):
         # GatedRMSNorm internally applying SiLU to the gate
         # SiLU is applied internally before normalization, unlike standard
         # norm usage
-        hidden_states = self.norm(hidden_states, gate)
+        hidden_states = self.norm(hidden_states, gate[:num_actual_tokens])
 
         # 5. Final linear projection
         out, _ = self.out_proj(hidden_states)
@@ -759,9 +761,7 @@ def mamba_mixer2_fake(
     layer_name: str,
     mup_vector: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-
-    print("What is this for?")
-    raise
+    return torch.empty_like(hidden_states).contiguous()
 
 direct_register_custom_op(
     op_name="mamba_mixer2",
