@@ -544,6 +544,10 @@ class MambaMixer2(MambaBase, nn.Module):
         has_prefill = num_prefills > 0
         has_decode = num_decodes > 0
 
+        print("num_decodes: ", num_decodes)
+        print("num_prefill_tokens: ", num_prefill_tokens)
+        print("hidden_states_B_C.shape: ", hidden_states_B_C.shape)
+
         # NOTE: V0 put prefill before decode, v1 puts decode before prefill
         # Separate prefill and decode by splitting varlen input
         # Split along token dimension
