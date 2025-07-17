@@ -659,7 +659,7 @@ def supports_cross_encoding(
 def has_step_pooler(model: Union[type[object], object]) -> bool:
     """Check if the model uses step pooler."""
     return is_pooling_model(model) and any(
-        type(module).__name__ == "StepPool" for module in model.modules())
+        type(module).__name__ == "StepPooler" for module in model.modules())
 
 
 class SupportsQuant:
@@ -722,7 +722,8 @@ class SupportsTranscription(Protocol):
 
     @classmethod
     def get_generation_prompt(cls, audio: np.ndarray,
-                              stt_config: SpeechToTextConfig, language: str,
+                              stt_config: SpeechToTextConfig,
+                              model_config: ModelConfig, language: str,
                               task_type: str,
                               request_prompt: str) -> PromptType:
         """Get the prompt for the ASR model.
