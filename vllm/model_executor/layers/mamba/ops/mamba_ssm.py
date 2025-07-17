@@ -14,6 +14,8 @@ from vllm.triton_utils import HAS_TRITON, tl, triton
 TRITON3 = HAS_TRITON and (version.parse(triton.__version__)
                           >= version.parse("3.0.0"))
 
+import triton_dejavu
+
 if TRITON3:
 
     @triton.jit
@@ -28,16 +30,26 @@ else:
         return dt
 
 
-@triton.heuristics(
-    {"HAS_DT_BIAS": lambda args: args["dt_bias_ptr"] is not None})
-@triton.heuristics({"HAS_D": lambda args: args["D_ptr"] is not None})
-@triton.heuristics({"HAS_Z": lambda args: args["z_ptr"] is not None})
-@triton.heuristics({
-    "HAS_STATE_BATCH_INDICES":
-    lambda args: args["state_batch_indices_ptr"] is not None
-})
-@triton.heuristics(
-    {"BLOCK_SIZE_DSTATE": lambda args: triton.next_power_of_2(args["dstate"])})
+# @triton.heuristics(
+#     {"HAS_DT_BIAS": lambda args: args["dt_bias_ptr"] is not None})
+# @triton.heuristics({"HAS_D": lambda args: args["D_ptr"] is not None})
+# @triton.heuristics({"HAS_Z": lambda args: args["z_ptr"] is not None})
+# @triton.heuristics({
+#     "HAS_STATE_BATCH_INDICES":
+#     lambda args: args["state_batch_indices_ptr"] is not None
+# })
+# @triton.heuristics(
+#     {"BLOCK_SIZE_DSTATE": lambda args: triton.next_power_of_2(args["dstate"])})
+
+@triton_dejavu.jitcache(
+    check_keys=[
+        "BLOCK_SIZE_M",
+        "BLOCK_SIZE_DSTATE"
+    ],
+    check_specialization=["dim", "dstate"], # TODO: some strides?
+    assume_const=[], # TODO
+    # autotuner_args=["BLOCK_SIZE_M", "BLOCK_SIZE_N", "BLOCK_SIZE_K"],
+)
 @triton.jit
 def _selective_scan_update_kernel(
     # Pointers to matrices
@@ -278,55 +290,67 @@ def selective_state_update(state,
         -1) == 0 and dt_bias.stride(-1) == 0
     with torch.cuda.device(x.device.index):
         _selective_scan_update_kernel[grid](
-            state,
-            x,
-            dt,
-            dt_bias,
-            A,
-            B,
-            C,
-            D,
-            z,
-            out,
-            state_batch_indices,
-            pad_slot_id,
-            batch,
-            nheads,
-            dim,
-            dstate,
-            nheads // ngroups,
-            state.stride(0),
-            state.stride(1),
-            state.stride(2),
-            state.stride(3),
-            x.stride(0),
-            x.stride(1),
-            x.stride(2),
-            dt.stride(0),
-            dt.stride(1),
-            dt.stride(2),
-            *(dt_bias.stride(0),
-              dt_bias.stride(1)) if dt_bias is not None else 0,
-            A.stride(0),
-            A.stride(1),
-            A.stride(2),
-            B.stride(0),
-            B.stride(1),
-            B.stride(2),
-            C.stride(0),
-            C.stride(1),
-            C.stride(2),
-            *(D.stride(0), D.stride(1)) if D is not None else 0,
-            z_strides[0],
-            z_strides[1],
-            z_strides[2],
-            out.stride(0),
-            out.stride(1),
-            out.stride(2),
-            dt_softplus,
-            tie_hdim,
-            BLOCK_SIZE_M,
-            num_warps=num_warps,
+        # Pointers to matrices
+        state_ptr =               state,
+        x_ptr =                   x,
+        dt_ptr =                  dt,
+        dt_bias_ptr =             dt_bias,
+        A_ptr =                   A,
+        B_ptr =                   B,
+        C_ptr =                   C,
+        D_ptr =                   D,
+        z_ptr =                   z,
+        out_ptr =                 out,
+        state_batch_indices_ptr = state_batch_indices,
+        pad_slot_id =             pad_slot_id,
+        # Matrix dimensions
+        batch =                   batch,
+        nheads =                  nheads,
+        dim =                     dim,
+        dstate =                  dstate,
+        nheads_ngroups_ratio =    nheads // ngroups,
+        # Strides
+        stride_state_batch =      state.stride(0),
+        stride_state_head =       state.stride(1),
+        stride_state_dim =        state.stride(2),
+        stride_state_dstate =     state.stride(3),
+        stride_x_batch =          x.stride(0),
+        stride_x_head =           x.stride(1),
+        stride_x_dim =            x.stride(2),
+        stride_dt_batch =         dt.stride(0),
+        stride_dt_head =          dt.stride(1),
+        stride_dt_dim =           dt.stride(2),
+        stride_dt_bias_head =     dt_bias.stride(0) if dt_bias is not None else 0,
+        stride_dt_bias_dim =      dt_bias.stride(1) if dt_bias is not None else 0,
+        stride_A_head =           A.stride(0),
+        stride_A_dim =            A.stride(1),
+        stride_A_dstate =         A.stride(2),
+        stride_B_batch =          B.stride(0),
+        stride_B_group =          B.stride(1),
+        stride_B_dstate =         B.stride(2),
+        stride_C_batch =          C.stride(0),
+        stride_C_group =          C.stride(1),
+        stride_C_dstate =         C.stride(2),
+        stride_D_head =           D.stride(0) if D is not None else 0, 
+        stride_D_dim =            D.stride(1) if D is not None else 0,
+        stride_z_batch =          z_strides[0],
+        stride_z_head =           z_strides[1],
+        stride_z_dim =            z_strides[2],
+        stride_out_batch =        out.stride(0),
+        stride_out_head =         out.stride(1),
+        stride_out_dim =          out.stride(2),
+        # Meta-parameters
+        DT_SOFTPLUS = dt_softplus,
+        TIE_HDIM = tie_hdim,
+        BLOCK_SIZE_M = BLOCK_SIZE_M,
+        # heuristics?
+        HAS_DT_BIAS = dt_bias is not None,
+        HAS_D = D is not None,
+        HAS_Z = z is not None,
+        HAS_STATE_BATCH_INDICES = state_batch_indices is not None,
+        BLOCK_SIZE_DSTATE = triton.next_power_of_2(dstate),
+        # config
+        num_warps=num_warps,
         )
     if not has_heads:
         out = out.squeeze(1)
