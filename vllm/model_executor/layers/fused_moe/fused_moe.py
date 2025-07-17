@@ -643,8 +643,6 @@ def get_config_file_name(E: int,
                          N: int,
                          dtype: Optional[str],
                          block_shape: Optional[list[int]] = None) -> str:
-    # E = 64
-    # N = 640
     device_name = current_platform.get_device_name().replace(" ", "_")
     dtype_selector = "" if not dtype else f",dtype={dtype}"
     block_shape_selector = ("" if not block_shape or not all(block_shape) else
