@@ -13,8 +13,9 @@ from vllm.triton_utils import tl, triton
 
 TRITON_22 = version.parse(triton.__version__) >= version.parse('2.2.0')
 
+import triton_dejavu
 
-@triton.autotune(
+@triton_dejavu.autotune(
     configs=[
         triton.Config(
             {
