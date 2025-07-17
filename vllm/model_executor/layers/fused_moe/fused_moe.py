@@ -696,18 +696,19 @@ def get_moe_configs(
         applicable_name_part = config_file_path.split(",device")[1]
         all_applicable_files = [f for f in all_config_files if applicable_name_part in f]
         available_E = list(set([int(f.split("E=")[1].split(",N=")[0]) for f in all_applicable_files]))
-        available_N = list(set([int(f.split("N=")[1].split(",device")[0]) for f in all_applicable_files]))
         next_best_e = min(available_E, key=lambda x: abs(x - E))
-        next_best_n = min(available_N, key=lambda x: abs(x - N))
+        all_applicable_n = [f for f in all_applicable_files if f"E={next_best_e}" in f]
+        available_N_given_e = list(set([int(f.split("N=")[1].split(",device")[0]) for f in all_applicable_n]))
+        next_best_n = min(available_N_given_e, key=lambda x: abs(x - N))
         
         fallback_json_file_name = get_config_file_name(next_best_e, next_best_n, dtype, block_shape)
         fallback_config_file_path = os.path.join(
             os.path.dirname(os.path.realpath(__file__)), "configs", fallback_json_file_name)
         if os.path.exists(fallback_config_file_path):
             with open(fallback_config_file_path) as f:
-                logger.warning("Config file not found at %s. Trying to use next" \
+                logger.warning(("Config file not found at %s. Trying to use next" \
                                " best config at %s for MoE layer. Performance"
-                               " might still be sub-optimal.", 
+                               " might still be sub-optimal."), 
                                config_file_path, fallback_config_file_path)
                 return {int(key): val for key, val in json.load(f).items()}
         
