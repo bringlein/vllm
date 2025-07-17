@@ -759,9 +759,7 @@ def mamba_mixer2_fake(
     layer_name: str,
     mup_vector: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-
-    print("What is this for?")
-    raise
+    return torch.empty_like(hidden_states).contiguous()
 
 direct_register_custom_op(
     op_name="mamba_mixer2",
