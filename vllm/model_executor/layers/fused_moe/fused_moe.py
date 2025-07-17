@@ -690,36 +690,6 @@ def get_moe_configs(
             # If a configuration has been found, return it
             return {int(key): val for key, val in json.load(f).items()}
 
-    if os.environ.get("NGL_USE_TRITON_CONFIG_HEURISTICS", "0") == "1":  # yes, will be replaced with propper vllm.envs
-        logger.warning("Config file not found at %s. Trying to find next best config.", config_file_path)
-        config_folder = os.path.join(os.path.dirname(os.path.realpath(__file__)), "configs")
-        all_config_files = [f for f in os.listdir(config_folder) if os.path.isfile(os.path.join(config_folder, f))]
-        applicable_name_part = config_file_path.split(",device")[1]
-        all_applicable_files = [f for f in all_config_files if applicable_name_part in f]
-        print(all_applicable_files)
-        available_E = [int(f.split("E=")[1].split(",N=")[0]) for f in all_applicable_files]
-        available_N = [int(f.split("N=")[1].split(",device")[0]) for f in all_applicable_files]
-        available_E = list(set(available_E))
-        available_N = list(set(available_N))
-        print(available_E)
-        print(available_N)
-        next_best_e = min(available_E, key=lambda x: abs(x - E))
-        # for N, it looks like the next LARGER is better, even if the difference is larger
-        # or not?
-        # available_N = [n for n in available_N if n > N]
-        next_best_n = min(available_N, key=lambda x: abs(x - N))
-        json_file_name = get_config_file_name(next_best_e, next_best_n, dtype, block_shape)
-
-        config_file_path = os.path.join(
-            os.path.dirname(os.path.realpath(__file__)), "configs", json_file_name)
-        if os.path.exists(config_file_path):
-            with open(config_file_path) as f:
-                logger.info("Using configuration from %s for MoE layer.",
-                            config_file_path)
-                # If a configuration has been found, return it
-                return {int(key): val for key, val in json.load(f).items()}
-        
-
     # If no optimized configuration is available, we will use the default
     # configuration
     logger.warning(
