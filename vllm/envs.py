@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     VLLM_XLA_CHECK_RECOMPILATION: bool = False
     VLLM_FUSED_MOE_CHUNK_SIZE: int = 64 * 1024
     VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING: bool = True
+    VLLM_ENABLE_FUSED_MOE_CONFIG_HEURISTICS: bool = True
     VLLM_USE_RAY_SPMD_WORKER: bool = False
     VLLM_USE_RAY_COMPILED_DAG: bool = False
     VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE: str = "auto"
@@ -552,6 +553,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING":
     lambda: bool(
         int(os.getenv("VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING", "1"))),
+    # Enables the fallback heuristic if no tuned fused_moe config is found
+    "VLLM_ENABLE_FUSED_MOE_CONFIG_HEURISTICS":
+    lambda: bool(
+        int(os.getenv("VLLM_ENABLE_FUSED_MOE_CONFIG_HEURISTICS", "0"))),
 
     # If set, vllm will skip the deprecation warnings.
     "VLLM_NO_DEPRECATION_WARNING":
