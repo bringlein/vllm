@@ -15,7 +15,6 @@ from vllm.triton_utils import tl, triton
 import triton_dejavu
 
 @triton_dejavu.jitcache(
-    # this list is shorter, since it will be called only within one model
     check_keys=[
         "IS_CAUSAL",
     ],
