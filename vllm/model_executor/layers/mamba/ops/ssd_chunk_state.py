@@ -13,9 +13,10 @@ import torch
 from vllm.triton_utils import tl, triton
 
 from .mamba_ssm import softplus
+import triton_dejavu
 
 
-@triton.autotune(
+@triton_dejavu.autotune(
     configs=[
         triton.Config({'BLOCK_SIZE_H': 1}),
         triton.Config({'BLOCK_SIZE_H': 2}),
@@ -111,7 +112,7 @@ def _chunk_cumsum_fwd_kernel(
              mask=(offs_h[:, None] < nheads) & (offs_c[None, :] < chunk_size))
 
 
-@triton.autotune(
+@triton_dejavu.autotune(
     configs=[
         triton.Config(
             {
@@ -312,7 +313,7 @@ def _chunk_state_fwd_kernel(
     tl.store(states_ptrs, states, mask=c_mask)
 
 
-@triton.autotune(
+@triton_dejavu.autotune(
     configs=[
         triton.Config(
             {

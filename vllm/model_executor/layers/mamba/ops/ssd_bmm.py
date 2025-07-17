@@ -12,8 +12,9 @@ import torch
 
 from vllm.triton_utils import tl, triton
 
+import triton_dejavu
 
-@triton.autotune(
+@triton_dejavu.autotune(
     configs=[
         triton.Config(
             {
