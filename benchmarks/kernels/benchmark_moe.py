@@ -8,10 +8,12 @@ from contextlib import nullcontext
 from datetime import datetime
 from itertools import product
 from typing import Any, TypedDict
+import uuid
+import pandas as pd
 
 import ray
 import torch
-from ray.experimental.tqdm_ray import tqdm
+# from ray.experimental.tqdm_ray import tqdm
 
 from vllm.model_executor.layers.fused_moe.fused_moe import *
 from vllm.platforms import current_platform
@@ -20,7 +22,10 @@ from vllm.triton_utils import triton
 from vllm.utils import FlexibleArgumentParser
 
 FP8_DTYPE = current_platform.fp8_dtype()
+import logging
 
+logger = logging.getLogger("ray")
+logger.setLevel(logging.WARNING)
 
 class BenchmarkConfig(TypedDict):
     BLOCK_SIZE_M: int
@@ -195,6 +200,22 @@ def benchmark_config(
         latencies.append(start_event.elapsed_time(end_event))
     avg = sum(latencies) / (num_iters * 10) * 1000  # us
     graph.reset()
+        
+    now = datetime.now()
+    print(f"{now.ctime()}] Completed tuning for batch_size={num_tokens}")
+    save_result_path = f"/home/zrlngl/watsonx/moe_results/{now.ctime().replace(" ","_").replace(":","-")}_tokens={num_tokens}__{uuid.uuid4()}.json"
+    result_dict = {"num_tokens": num_tokens, "num_experts": num_experts, "shard_intermediate_size": shard_intermediate_size, 
+                   "hidden_size": hidden_size, "topk": topk, "dtype": dtype, "kernel_time": avg,
+                   "config": config}
+    print(json.dumps(result_dict))
+    # with open(save_result_path, 'w') as f:
+    #     json.dump(result_dict, f)
+    # ds = ray.data.from_items([result_dict])
+    ds = ray.data.from_pandas(pd.DataFrame.from_dict(result_dict))
+    # ds.write_json(f"local:///tmp/data/moe_results/{now.ctime().replace(" ","_").replace(":","-")}_tokens={num_tokens}__{uuid.uuid4}.json")
+    ds.write_json(f"local:///{save_result_path}")
+    logger.info(f"stored result in {save_result_path}")
+    print(f"stored result in {save_result_path}", flush=True)
     return avg
 
 
@@ -476,7 +497,8 @@ class BenchmarkWorker:
                 need_device_guard = True
 
         with torch.cuda.device(self.device_id) if need_device_guard else nullcontext():
-            for config in tqdm(search_space):
+            # for config in tqdm(search_space):
+            for config in search_space:
                 try:
                     kernel_time = benchmark_config(
                         config,
@@ -501,6 +523,19 @@ class BenchmarkWorker:
                     best_config = config
         now = datetime.now()
         print(f"{now.ctime()}] Completed tuning for batch_size={num_tokens}")
+        # save_result_path = f"/home/zrlngl/watsonx/moe_results/{now.ctime().replace(" ","_").replace(":","-")}_tokens={num_tokens}__{uuid.uuid4}.json"
+        # result_dict = {"num_tokens": num_tokens, "num_experts": num_experts, "shard_intermediate_size": shard_intermediate_size, 
+        #                "hidden_size": hidden_size, "topk": topk, "dtype": dtype, "kernel_time": kernel_time,
+        #                "config": config}
+        # # with open(save_result_path, 'w') as f:
+        # #     json.dump(result_dict, f)
+        # # ds = ray.data.from_items([result_dict])
+        # ds = ray.data.from_pandas(pd.DataFrame.from_dict(result_dict))
+        # # ds.write_json(f"local:///tmp/data/moe_results/{now.ctime().replace(" ","_").replace(":","-")}_tokens={num_tokens}__{uuid.uuid4}.json")
+        # ds.write_json(f"local:///{save_result_path}")
+        # logger.info(f"stored result in {save_result_path}")
+        # print(f"stored result in {save_result_path}", flush=True)
+        # tqdm.write(f"stored result in {save_result_path}", flush=True)
         assert best_config is not None
         return best_config
 
@@ -614,10 +649,24 @@ def main(args: argparse.Namespace):
 
     if args.batch_size is None:
         batch_sizes = [
-        #     1,
+            1,
+            2,
+            4,
             8,
-        #     32,
-        #     64,
+            16,
+            24,
+            32,
+            48,
+            64,
+            96,
+            128,
+            256,
+            512,
+            1024,
+            1536,
+            2048,
+            3072,
+            4096,
         ]
     else:
         batch_sizes = args.batch_size
@@ -634,7 +683,7 @@ def main(args: argparse.Namespace):
         os.environ["ROCR_VISIBLE_DEVICES"] = val
         del os.environ["HIP_VISIBLE_DEVICES"]
 
-    ray.init()
+    ray.init(log_to_driver=True)
     num_gpus = int(ray.available_resources()["GPU"])
     workers = [BenchmarkWorker.remote(args.seed) for _ in range(num_gpus)]
 
