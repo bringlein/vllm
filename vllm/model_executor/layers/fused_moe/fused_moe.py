@@ -695,11 +695,18 @@ def get_moe_configs(
         all_config_files = [f for f in os.listdir(config_folder) if os.path.isfile(os.path.join(config_folder, f))]
         applicable_name_part = config_file_path.split(",device")[1]
         all_applicable_files = [f for f in all_config_files if applicable_name_part in f]
+        # N given E
         available_E = list(set([int(f.split("E=")[1].split(",N=")[0]) for f in all_applicable_files]))
         next_best_e = min(available_E, key=lambda x: abs(x - E))
         all_applicable_n = [f for f in all_applicable_files if f"E={next_best_e}" in f]
         available_N_given_e = list(set([int(f.split("N=")[1].split(",device")[0]) for f in all_applicable_n]))
         next_best_n = min(available_N_given_e, key=lambda x: abs(x - N))
+        # E given N
+        # available_N = list(set([int(f.split("N=")[1].split(",device")[0]) for f in all_applicable_files]))
+        # next_best_n = min(available_N, key=lambda x: abs(x - N))
+        # all_applicable_e = [f for f in all_applicable_files if f"N={next_best_n}" in f]
+        # available_E_given_n = list(set([int(f.split("E=")[1].split(",N=")[0]) for f in all_applicable_e]))
+        # next_best_e = min(available_E_given_n, key=lambda x: abs(x - E))
         
         fallback_json_file_name = get_config_file_name(next_best_e, next_best_n, dtype, block_shape)
         fallback_config_file_path = os.path.join(
