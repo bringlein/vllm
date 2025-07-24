@@ -104,6 +104,14 @@ TRITON_22 = version.parse(triton.__version__) >= version.parse('2.2.0')
             },
             num_stages=4,
             num_warps=2),
+        triton.Config(
+            {
+                'BLOCK_SIZE_M': 16,
+                'BLOCK_SIZE_N': 64,
+                'BLOCK_SIZE_K': 16
+            },
+            num_stages=4,
+            num_warps=2),
     ],
     key=['chunk_size', 'hdim', 'dstate', 'IS_CAUSAL'],
 )

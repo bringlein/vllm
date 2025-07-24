@@ -17,6 +17,7 @@ from vllm.triton_utils import tl, triton
         triton.Config({'BLOCK_SIZE': 128}),
         triton.Config({'BLOCK_SIZE': 256}),
         triton.Config({'BLOCK_SIZE': 512}),
+        triton.Config({'BLOCK_SIZE': 512}, num_warps=2, num_stages=2),
         triton.Config({'BLOCK_SIZE': 1024}),
         triton.Config({'BLOCK_SIZE': 2048}),
     ],

@@ -87,6 +87,14 @@ from vllm.triton_utils import tl, triton
             },
             num_stages=4,
             num_warps=2),
+        triton.Config(
+            {
+                'BLOCK_SIZE_M': 16,
+                'BLOCK_SIZE_N': 32,
+                'BLOCK_SIZE_K': 64
+            },
+            num_stages=4,
+            num_warps=4),
     ],
     key=['chunk_size', 'K', 'IS_CAUSAL'],
 )
