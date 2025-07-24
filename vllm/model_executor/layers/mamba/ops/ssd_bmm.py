@@ -100,6 +100,7 @@ import triton_dejavu
     ),
     key=['chunk_size', 'K', 'IS_CAUSAL'],
     use_cuda_graph=True,
+    ignore_dtypes=True,
 )
 @triton.jit
 def _bmm_chunk_fwd_kernel(

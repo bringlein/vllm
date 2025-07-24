@@ -117,6 +117,7 @@ import triton_dejavu
     ),
     use_cuda_graph=True,
     key=['chunk_size', 'hdim', 'dstate', 'IS_CAUSAL'],
+    ignore_dtypes=True,
 )
 @triton.jit
 def _chunk_scan_fwd_kernel(

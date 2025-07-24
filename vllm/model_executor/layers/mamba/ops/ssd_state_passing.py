@@ -29,6 +29,7 @@ import triton_dejavu
         num_stages=[1, 2, 3, 4, 5, 6, 8],
     ),
     use_cuda_graph=True,
+    ignore_dtypes=True,
     key=['dim'],
 )
 @triton.jit

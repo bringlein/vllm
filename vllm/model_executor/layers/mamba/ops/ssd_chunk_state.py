@@ -28,6 +28,7 @@ import triton_dejavu
     ],
     key=['chunk_size', 'nheads'],
     use_cuda_graph=True,
+    ignore_dtypes=True,
 )
 @triton.jit
 def _chunk_cumsum_fwd_kernel(
@@ -199,6 +200,7 @@ def _chunk_cumsum_fwd_kernel(
     ),
     key=['hdim', 'dstate', 'chunk_size'],
     use_cuda_graph=True,
+    ignore_dtypes=True,
 )
 @triton.jit
 def _chunk_state_fwd_kernel(
@@ -410,6 +412,7 @@ def _chunk_state_fwd_kernel(
     ),
     use_cuda_graph=True,
     key=['hdim', 'dstate', 'chunk_size'],
+    ignore_dtypes=True,
 )
 @triton.jit
 def _chunk_state_varlen_kernel(
