@@ -11,6 +11,9 @@ from vllm import _custom_ops as ops
 from vllm.attention.backends.utils import PAD_SLOT_ID
 from vllm.triton_utils import HAS_TRITON, tl, triton
 
+import triton_dejavu
+import os
+
 TRITON3 = HAS_TRITON and (version.parse(triton.__version__)
                           >= version.parse("3.0.0"))
 
@@ -28,6 +31,20 @@ else:
         return dt
 
 
+def fallback_heuristic_simple(key):
+    dstate = key[1]
+    BLOCK_SIZE_M, num_warps = (
+        (32, 4)
+        if dstate <= 16
+        else (
+            (16, 4)
+            if dstate <= 32
+            else ((8, 4) if dstate <= 64 else ((4, 4) if dstate <= 128 else ((4, 8))))
+        )
+    )
+    ret = triton.Config({"BLOCK_SIZE_M": BLOCK_SIZE_M}, num_warps=num_warps)
+    return ret
+
 @triton.heuristics(
     {"HAS_DT_BIAS": lambda args: args["dt_bias_ptr"] is not None})
 @triton.heuristics({"HAS_D": lambda args: args["D_ptr"] is not None})
@@ -38,6 +55,27 @@ else:
 })
 @triton.heuristics(
     {"BLOCK_SIZE_DSTATE": lambda args: triton.next_power_of_2(args["dstate"])})
+@triton_dejavu.autotune(
+    config_space=triton_dejavu.ConfigSpace(
+        {"BLOCK_SIZE_M": [4, 8, 16, 32, 64]},
+        num_warps=[2, 4, 8],
+        num_stages=[1, 2, 4, 6, 8],
+    ),
+    key=[
+        "dstate",
+        "BLOCK_SIZE_DSTATE",
+        "dim",
+        "nheads_ngroups_ratio",
+        # TODO strides?
+    ],
+    # custom_data_storage=os.path.abspath(
+    #     os.path.join(os.path.dirname(__file__), "dejavu_data")
+    # ),
+    use_cuda_graph=True,
+    # use_bo=True,
+    # search_max_search_t=360,
+    fallback_heuristic=fallback_heuristic_simple,
+)
 @triton.jit
 def _selective_scan_update_kernel(
     # Pointers to matrices
@@ -325,8 +363,8 @@ def selective_state_update(state,
             out.stride(2),
             dt_softplus,
             tie_hdim,
-            BLOCK_SIZE_M,
-            num_warps=num_warps,
+            # BLOCK_SIZE_M,
+            # num_warps=num_warps,
         )
     if not has_heads:
         out = out.squeeze(1)

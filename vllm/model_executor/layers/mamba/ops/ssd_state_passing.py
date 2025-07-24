@@ -13,14 +13,22 @@ from vllm.triton_utils import tl, triton
 import triton_dejavu
 
 @triton_dejavu.autotune(
-    configs=[
-        triton.Config({'BLOCK_SIZE': 64}),
-        triton.Config({'BLOCK_SIZE': 128}),
-        triton.Config({'BLOCK_SIZE': 256}),
-        triton.Config({'BLOCK_SIZE': 512}),
-        triton.Config({'BLOCK_SIZE': 1024}),
-        triton.Config({'BLOCK_SIZE': 2048}),
-    ],
+    # configs=[
+    #     triton.Config({'BLOCK_SIZE': 64}),
+    #     triton.Config({'BLOCK_SIZE': 128}),
+    #     triton.Config({'BLOCK_SIZE': 256}),
+    #     triton.Config({'BLOCK_SIZE': 512}),
+    #     triton.Config({'BLOCK_SIZE': 1024}),
+    #     triton.Config({'BLOCK_SIZE': 2048}),
+    # ],
+    config_space=triton_dejavu.ConfigSpace(
+        {
+            "BLOCK_SIZE": [32, 64, 128, 256, 512, 1024, 2048, 4096],
+         },
+        num_warps=[2, 4, 8],
+        num_stages=[1, 2, 3, 4, 5, 6, 8],
+    ),
+    use_cuda_graph=True,
     key=['dim'],
 )
 @triton.jit
