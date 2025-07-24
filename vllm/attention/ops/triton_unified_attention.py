@@ -585,7 +585,7 @@ def unified_attention(
     max_seqlen_q,
     seqused_k,
     max_seqlen_k,
-    # avg_seqlen_q,
+    avg_seqlen_q,
     softmax_scale,
     causal,
     window_size,
@@ -616,7 +616,7 @@ def unified_attention(
     # BLOCK_M = 64 if max_seqlen_q > 1 and avg_seqlen_q >= 4096 else 16
     # BLOCK_N = 32 if max_seqlen_k <= 64 or avg_seqlen_q <= 4096 else 64
     BLOCK_M = 16
-    BLOCK_N = 16
+    BLOCK_N = block_size
     BLOCK_Q = BLOCK_M // num_queries_per_kv
 
     # Ideally we would launch with kernel with:
