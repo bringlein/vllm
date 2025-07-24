@@ -75,6 +75,7 @@ def fallback_heuristic_simple(key):
     # use_bo=True,
     # search_max_search_t=360,
     fallback_heuristic=fallback_heuristic_simple,
+    ignore_dtypes=True,
 )
 @triton.jit
 def _selective_scan_update_kernel(
