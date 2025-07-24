@@ -27,6 +27,7 @@ import triton_dejavu
         triton.Config({'BLOCK_SIZE_H': 64}),
     ],
     key=['chunk_size', 'nheads'],
+    use_cuda_graph=True,
 )
 @triton.jit
 def _chunk_cumsum_fwd_kernel(
@@ -113,81 +114,91 @@ def _chunk_cumsum_fwd_kernel(
 
 
 @triton_dejavu.autotune(
-    configs=[
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 256,
-                'BLOCK_SIZE_K': 64
-            },
-            num_stages=3,
-            num_warps=8),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 64,
-                'BLOCK_SIZE_N': 256,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 128,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 64,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 64,
-                'BLOCK_SIZE_N': 128,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 32,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 64,
-                'BLOCK_SIZE_N': 32,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=5,
-            num_warps=2),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 32,
-                'BLOCK_SIZE_N': 64,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=5,
-            num_warps=2),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 64,
-                'BLOCK_SIZE_N': 64,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=4,
-            num_warps=2),
-    ],
+    # configs=[
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 128,
+    #             'BLOCK_SIZE_N': 256,
+    #             'BLOCK_SIZE_K': 64
+    #         },
+    #         num_stages=3,
+    #         num_warps=8),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 64,
+    #             'BLOCK_SIZE_N': 256,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=4,
+    #         num_warps=4),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 128,
+    #             'BLOCK_SIZE_N': 128,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=4,
+    #         num_warps=4),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 128,
+    #             'BLOCK_SIZE_N': 64,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=4,
+    #         num_warps=4),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 64,
+    #             'BLOCK_SIZE_N': 128,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=4,
+    #         num_warps=4),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 128,
+    #             'BLOCK_SIZE_N': 32,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=4,
+    #         num_warps=4),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 64,
+    #             'BLOCK_SIZE_N': 32,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=5,
+    #         num_warps=2),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 32,
+    #             'BLOCK_SIZE_N': 64,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=5,
+    #         num_warps=2),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 64,
+    #             'BLOCK_SIZE_N': 64,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=4,
+    #         num_warps=2),
+    # ],
+    config_space=triton_dejavu.ConfigSpace(
+        {
+            "BLOCK_SIZE_M": [16, 32, 64, 128, 256],
+            "BLOCK_SIZE_N": [16, 32, 64, 128, 256],
+            "BLOCK_SIZE_K": [16, 32, 64, 128, 256],
+         },
+        num_warps=[2, 4, 8],
+        num_stages=[1, 2, 3, 4, 5, 6, 8],
+    ),
     key=['hdim', 'dstate', 'chunk_size'],
+    use_cuda_graph=True,
 )
 @triton.jit
 def _chunk_state_fwd_kernel(
@@ -314,80 +325,90 @@ def _chunk_state_fwd_kernel(
 
 
 @triton_dejavu.autotune(
-    configs=[
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 256,
-                'BLOCK_SIZE_K': 64
-            },
-            num_stages=3,
-            num_warps=8),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 64,
-                'BLOCK_SIZE_N': 256,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 128,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 64,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 64,
-                'BLOCK_SIZE_N': 128,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 32,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 64,
-                'BLOCK_SIZE_N': 32,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=5,
-            num_warps=2),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 32,
-                'BLOCK_SIZE_N': 64,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=5,
-            num_warps=2),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 64,
-                'BLOCK_SIZE_N': 64,
-                'BLOCK_SIZE_K': 32
-            },
-            num_stages=4,
-            num_warps=2),
-    ],
+    # configs=[
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 128,
+    #             'BLOCK_SIZE_N': 256,
+    #             'BLOCK_SIZE_K': 64
+    #         },
+    #         num_stages=3,
+    #         num_warps=8),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 64,
+    #             'BLOCK_SIZE_N': 256,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=4,
+    #         num_warps=4),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 128,
+    #             'BLOCK_SIZE_N': 128,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=4,
+    #         num_warps=4),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 128,
+    #             'BLOCK_SIZE_N': 64,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=4,
+    #         num_warps=4),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 64,
+    #             'BLOCK_SIZE_N': 128,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=4,
+    #         num_warps=4),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 128,
+    #             'BLOCK_SIZE_N': 32,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=4,
+    #         num_warps=4),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 64,
+    #             'BLOCK_SIZE_N': 32,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=5,
+    #         num_warps=2),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 32,
+    #             'BLOCK_SIZE_N': 64,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=5,
+    #         num_warps=2),
+    #     triton.Config(
+    #         {
+    #             'BLOCK_SIZE_M': 64,
+    #             'BLOCK_SIZE_N': 64,
+    #             'BLOCK_SIZE_K': 32
+    #         },
+    #         num_stages=4,
+    #         num_warps=2),
+    # ],
+    config_space=triton_dejavu.ConfigSpace(
+        {
+            "BLOCK_SIZE_M": [16, 32, 64, 128, 256],
+            "BLOCK_SIZE_N": [16, 32, 64, 128, 256],
+            "BLOCK_SIZE_K": [16, 32, 64, 128, 256],
+         },
+        num_warps=[2, 4, 8],
+        num_stages=[1, 2, 3, 4, 5, 6, 8],
+    ),
+    use_cuda_graph=True,
     key=['hdim', 'dstate', 'chunk_size'],
 )
 @triton.jit
