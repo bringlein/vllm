@@ -131,12 +131,12 @@ def _selective_scan_update_kernel(
     # Meta-parameters
     DT_SOFTPLUS: tl.constexpr,
     TIE_HDIM: tl.constexpr,
-    BLOCK_SIZE_M: tl.constexpr,
     HAS_DT_BIAS: tl.constexpr,
     HAS_D: tl.constexpr,
     HAS_Z: tl.constexpr,
     HAS_STATE_BATCH_INDICES: tl.constexpr,
     BLOCK_SIZE_DSTATE: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,
 ):
     pid_m = tl.program_id(axis=0)
     pid_b = tl.program_id(axis=1)
