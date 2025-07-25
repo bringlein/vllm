@@ -110,7 +110,7 @@ class TritonAttentionMetadataBuilder(
         slot_mapping = common_attn_metadata.slot_mapping
         
         num_reqs = common_attn_metadata.num_reqs
-        avg_query_len = int(self.runner.query_start_loc_np[num_reqs] /
+        avg_query_len = int(common_attn_metadata.seq_lens_cpu.sum() /
                             num_reqs)
 
 
