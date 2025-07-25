@@ -22,6 +22,7 @@ from vllm.triton_utils import tl, triton
         triton.Config({'BLOCK_SIZE': 2048}),
     ],
     key=['dim'],
+    use_cuda_graph=True,
 )
 @triton.jit
 def _state_passing_fwd_kernel(

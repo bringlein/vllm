@@ -114,6 +114,7 @@ TRITON_22 = version.parse(triton.__version__) >= version.parse('2.2.0')
             num_warps=2),
     ],
     key=['chunk_size', 'hdim', 'dstate', 'IS_CAUSAL'],
+    use_cuda_graph=True,
 )
 @triton.jit
 def _chunk_scan_fwd_kernel(

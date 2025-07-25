@@ -97,6 +97,7 @@ from vllm.triton_utils import tl, triton
             num_warps=4),
     ],
     key=['chunk_size', 'K', 'IS_CAUSAL'],
+    use_cuda_graph=True,
 )
 @triton.jit
 def _bmm_chunk_fwd_kernel(

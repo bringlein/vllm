@@ -195,6 +195,7 @@ def _chunk_cumsum_fwd_kernel(
             num_warps=8),
     ],
     key=['hdim', 'dstate', 'chunk_size'],
+    use_cuda_graph=True,
 )
 @triton.jit
 def _chunk_state_fwd_kernel(
@@ -404,6 +405,7 @@ def _chunk_state_fwd_kernel(
             num_warps=2),
     ],
     key=['hdim', 'dstate', 'chunk_size'],
+    use_cuda_graph=True,
 )
 @triton.jit
 def _chunk_state_varlen_kernel(
