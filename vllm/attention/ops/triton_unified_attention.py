@@ -179,11 +179,7 @@ def kernel_unified_attention_2d(
                     offs_d[:, None] * stride_k_cache_3 +
                     (offs_n[None, :] % BLOCK_SIZE) * stride_k_cache_1)
 
-        # seq_offset_load = start_n + offs_n
-        # load_mask = seq_offset_load < max_seq_prefix_len
-
         # K : (HEAD_SIZE_PADDED, BLOCK_N)
-        # & load_mask[None, :]
         K_load = tl.load(key_cache_ptr + k_offset,
                          mask=dim_mask[:, None],
                          other=0.0)
@@ -197,7 +193,6 @@ def kernel_unified_attention_2d(
             K = K_load
 
         # V : (BLOCK_N, HEAD_SIZE_PADDED)
-        #  & load_mask[:, None]
         V_load = tl.load(value_cache_ptr + v_offset,
                          mask=dim_mask[None, :],
                          other=0.0)
@@ -615,8 +610,6 @@ def unified_attention(
     head_size = q.shape[2]
 
     # balancing the blocksizes for short and long prompts
-    # BLOCK_M = 64 if max_seqlen_q > 1 and avg_seqlen_q >= 4096 else 16
-    # BLOCK_N = 32 if max_seqlen_k <= 64 or avg_seqlen_q <= 4096 else 64
     BLOCK_M = 16
     BLOCK_N = block_size
     BLOCK_Q = BLOCK_M // num_queries_per_kv
@@ -676,7 +669,6 @@ def unified_attention(
             num_seqs=num_seqs,
             BLOCK_M=BLOCK_M,
             BLOCK_N=BLOCK_N,
-            # num_stages=4 if BLOCK_M == 16 else 2,
             num_stages=4,
         )
     else:
