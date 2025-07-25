@@ -179,12 +179,13 @@ def kernel_unified_attention_2d(
                     offs_d[:, None] * stride_k_cache_3 +
                     (offs_n[None, :] % BLOCK_SIZE) * stride_k_cache_1)
 
-        seq_offset_load = start_n + offs_n
-        load_mask = seq_offset_load < max_seq_prefix_len
+        # seq_offset_load = start_n + offs_n
+        # load_mask = seq_offset_load < max_seq_prefix_len
 
         # K : (HEAD_SIZE_PADDED, BLOCK_N)
+        # & load_mask[None, :]
         K_load = tl.load(key_cache_ptr + k_offset,
-                         mask=dim_mask[:, None] & load_mask[None, :],
+                         mask=dim_mask[:, None],
                          other=0.0)
 
         if K_load.dtype.is_fp8():
@@ -196,8 +197,9 @@ def kernel_unified_attention_2d(
             K = K_load
 
         # V : (BLOCK_N, HEAD_SIZE_PADDED)
+        #  & load_mask[:, None]
         V_load = tl.load(value_cache_ptr + v_offset,
-                         mask=dim_mask[None, :] & load_mask[:, None],
+                         mask=dim_mask[None, :],
                          other=0.0)
 
         if V_load.dtype.is_fp8():
@@ -675,6 +677,7 @@ def unified_attention(
             BLOCK_M=BLOCK_M,
             BLOCK_N=BLOCK_N,
             # num_stages=4 if BLOCK_M == 16 else 2,
+            num_stages=4,
         )
     else:
         # for initial version, NUM_SEGMENTS = 16 is chosen as a default
