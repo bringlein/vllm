@@ -54,20 +54,6 @@ class TritonAttentionMetadata:
     scheduler_metadata: Optional[torch.Tensor] = None
     prefix_scheduler_metadata: Optional[torch.Tensor] = None
 
-    # for local attention
-    @dataclass
-    class LocalAttentionMetadata:
-        local_query_start_loc: torch.Tensor
-        local_seqused_k: torch.Tensor
-        local_block_table: torch.Tensor
-        local_max_query_len: int
-        local_max_seq_len: int
-        # TODO? 
-        local_avg_query_len: int
-        local_scheduler_metadata: Optional[torch.Tensor]
-
-    local_attn_metadata: Optional[LocalAttentionMetadata] = None
-
 
 class TritonAttentionMetadataBuilder(
         AttentionMetadataBuilder[TritonAttentionMetadata]):
