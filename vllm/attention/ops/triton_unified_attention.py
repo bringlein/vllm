@@ -581,7 +581,6 @@ def unified_attention(
     max_seqlen_q,
     seqused_k,
     max_seqlen_k,
-    avg_seqlen_q,
     softmax_scale,
     causal,
     window_size,

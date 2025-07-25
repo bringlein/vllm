@@ -36,7 +36,6 @@ class TritonAttentionMetadata:
 
     num_actual_tokens: int  # Number of tokens excluding padding.
     max_query_len: int
-    avg_query_len: int
     query_start_loc: torch.Tensor
     max_seq_len: int
     seq_lens: torch.Tensor
@@ -95,11 +94,6 @@ class TritonAttentionMetadataBuilder(
         block_table_tensor = common_attn_metadata.block_table_tensor
         slot_mapping = common_attn_metadata.slot_mapping
         
-        num_reqs = common_attn_metadata.num_reqs
-        avg_query_len = int(common_attn_metadata.seq_lens_cpu.sum() /
-                            num_reqs)
-
-
         use_cascade = common_prefix_len > 0
 
         if use_cascade:
@@ -132,7 +126,6 @@ class TritonAttentionMetadataBuilder(
             prefix_kv_lens=prefix_kv_lens,
             suffix_kv_lens=suffix_kv_lens,
             prefix_scheduler_metadata=prefix_scheduler_metadata,
-            avg_query_len=avg_query_len,
         )
         return attn_metadata
 
@@ -343,7 +336,6 @@ class TritonAttentionImpl(AttentionImpl):
         max_seqlen_q = attn_metadata.max_query_len
         max_seqlen_k = attn_metadata.max_seq_len
         block_table = attn_metadata.block_table
-        avg_seqlen_q = attn_metadata.avg_query_len
 
         if use_prefill_decode_attn:
             # Compute attention and update output up to `num_actual_tokens`.
@@ -377,7 +369,6 @@ class TritonAttentionImpl(AttentionImpl):
                 max_seqlen_q=max_seqlen_q,
                 seqused_k=seqused_k,
                 max_seqlen_k=max_seqlen_k,
-                avg_seqlen_q=avg_seqlen_q,
                 softmax_scale=self.scale,
                 causal=True,
                 alibi_slopes=self.alibi_slopes,
