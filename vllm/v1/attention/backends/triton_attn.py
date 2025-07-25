@@ -17,7 +17,6 @@ from vllm.attention.ops.triton_unified_attention import unified_attention
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
-from vllm.v1.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.v1.attention.backends.utils import (AttentionMetadataBuilder,
                                               CommonAttentionMetadata)
 from vllm.v1.kv_cache_interface import AttentionSpec
@@ -63,6 +62,7 @@ class TritonAttentionMetadata:
         local_block_table: torch.Tensor
         local_max_query_len: int
         local_max_seq_len: int
+        # TODO? 
         local_avg_query_len: int
         local_scheduler_metadata: Optional[torch.Tensor]
 
