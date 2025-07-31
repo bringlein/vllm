@@ -624,7 +624,8 @@ def unified_attention(
     total_num_q_blocks = q.shape[0] // BLOCK_Q + num_seqs
 
     # if batch contains a prefill
-    if max_seqlen_q > 1 or total_num_q_blocks * num_kv_heads > 128:
+    # if max_seqlen_q > 1 or total_num_q_blocks * num_kv_heads > 128:
+    if True:
 
         grid = lambda META: (q.shape[0] // (META[
             'BLOCK_M'] // num_queries_per_kv) + num_seqs, num_kv_heads)
