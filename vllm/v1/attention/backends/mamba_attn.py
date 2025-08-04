@@ -2,15 +2,15 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import math
 from dataclasses import dataclass
-from typing import ClassVar, Optional
+from typing import TYPE_CHECKING, ClassVar, Optional
 
 import torch
 
 from vllm.attention.backends.abstract import AttentionBackend
 from vllm.config import VllmConfig
-from vllm.v1.attention.backends.utils import (AttentionMetadataBuilder,
-                                              CommonAttentionMetadata,
-                                              split_decodes_and_prefills)
+from vllm.v1.attention.backends.utils import (
+    AttentionCGSupport, AttentionMetadataBuilder, CommonAttentionMetadata,
+    reorder_batch_to_split_decodes_and_prefills, split_decodes_and_prefills)
 from vllm.v1.kv_cache_interface import AttentionSpec, MambaSpec
 
 
@@ -82,6 +82,9 @@ class Mamba2AttentionMetadata:
 
 class Mamba2AttentionMetadataBuilder(
         AttentionMetadataBuilder[Mamba2AttentionMetadata]):
+
+    attn_cudagraph_support: ClassVar[AttentionCGSupport] = \
+        AttentionCGSupport.PURE_DECODE_ONLY
 
     reorder_batch_threshold: ClassVar[int] = 1
 
@@ -160,3 +163,23 @@ class Mamba2AttentionMetadataBuilder(
             state_indices_tensor=state_indices_tensor,
         )
         return attn_metadata
+
+    def build_for_cudagraph_capture(
+            self, common_attn_metadata: CommonAttentionMetadata):
+        """
+        This method builds the metadata for full cudagraph capture.
+        Currently, only decode is supported for full cudagraphs with Mamba.
+        """
+        m = common_attn_metadata
+
+        assert m.num_reqs == m.num_actual_tokens, \
+            "Mamba only supports decode-only full CUDAGraph capture. " \
+            "Make sure all cudagraph capture sizes <= max_num_seq."
+
+        m.max_query_len = 1  # decode-only
+
+        return self.build(0, m)
+
+    def can_run_in_cudagraph(
+            self, common_attn_metadata: CommonAttentionMetadata) -> bool:
+        return common_attn_metadata.max_query_len == 1
