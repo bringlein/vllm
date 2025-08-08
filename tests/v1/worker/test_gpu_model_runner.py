@@ -405,7 +405,7 @@ def test_kv_cache_stride_order(monkeypatch, model_runner):
     n_heads = model_runner.model_config.get_num_kv_heads(
         model_runner.parallel_config)
     expected_kv_cache_shape = [
-        2, NUM_BLOCKS, BLOCK_SIZE, n_heads,
+        NUM_BLOCKS, 2, BLOCK_SIZE, n_heads,
         model_runner.model_config.get_head_size()
     ]
     # TODO mla test
@@ -417,12 +417,12 @@ def test_kv_cache_stride_order(monkeypatch, model_runner):
         return rnd_stride
 
     # Patch the attention backend class and re-trigger the KV cache creation.
-    for attn_backend in model_runner.attn_backends:
+    for attn_group in model_runner._attn_group_iterator():
+        attn_backend = attn_group.backend
         monkeypatch.setattr(attn_backend, "get_kv_cache_stride_order",
                             rnd_stride_order)
 
-    model_runner.attn_backends = []
-    model_runner.attn_metadata_builders = []
+    model_runner.attn_groups = []
     model_runner.initialize_kv_cache(model_runner.kv_cache_config)
 
     # Shape is unchanged, but layout may differ

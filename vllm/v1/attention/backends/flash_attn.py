@@ -85,7 +85,7 @@ class FlashAttentionBackend(AttentionBackend):
     ) -> tuple[int, ...]:
         if block_size % 16 != 0:
             raise ValueError("Block size must be a multiple of 16.")
-        return (2, num_blocks, block_size, num_kv_heads, head_size)
+        return (num_blocks, 2, block_size, num_kv_heads, head_size)
 
     @staticmethod
     def get_kv_cache_stride_order() -> tuple[int, ...]:
@@ -373,6 +373,7 @@ class FlashAttentionImpl(AttentionImpl):
         logits_soft_cap: Optional[float] = None,
         attn_type: AttentionType = AttentionType.DECODER,
         kv_sharing_target_layer_name: Optional[str] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> None:
         self.num_heads = num_heads
         self.head_size = head_size
@@ -410,6 +411,14 @@ class FlashAttentionImpl(AttentionImpl):
             raise NotImplementedError(
                 "FlashAttention does not support fp8 kv-cache on this device.")
 
+        self.sinks = sinks
+        if self.sinks is not None:
+            assert self.vllm_flash_attn_version == 3, (
+                "Sinks are only supported in FlashAttention 3")
+            assert self.sinks.shape[0] == num_heads, (
+                "Sinks must have the same number of heads as the number of "
+                "heads in the layer")
+
     def forward(
         self,
         layer: torch.nn.Module,
@@ -427,7 +436,7 @@ class FlashAttentionImpl(AttentionImpl):
             query: shape = [num_tokens, num_heads, head_size]
             key: shape = [num_tokens, num_kv_heads, head_size]
             value: shape = [num_tokens, num_kv_heads, head_size]
-            kv_cache = [2, num_blocks, block_size, num_kv_heads, head_size]
+            kv_cache = [num_blocks, 2, block_size, num_kv_heads, head_size]
             attn_metadata: Metadata for attention.
         Returns:
             shape = [num_tokens, num_heads * head_size]
@@ -470,7 +479,7 @@ class FlashAttentionImpl(AttentionImpl):
                                                    attn_metadata, layer)
 
         # For decoder and cross-attention, use KV cache as before
-        key_cache, value_cache = kv_cache.unbind(0)
+        key_cache, value_cache = kv_cache.unbind(1)
 
         if self.kv_sharing_target_layer_name is None:
             # Reshape the input keys and values and store them in the cache.
@@ -534,6 +543,7 @@ class FlashAttentionImpl(AttentionImpl):
                 k_descale=layer._k_scale.expand(descale_shape),
                 v_descale=layer._v_scale.expand(descale_shape),
                 num_splits=attn_metadata.max_num_splits,
+                s_aux=self.sinks,
             )
             return output
 
