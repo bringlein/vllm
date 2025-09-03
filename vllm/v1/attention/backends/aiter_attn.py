@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Attention layer using Triton-only kernels (no-external dependencies)."""
+"""Attention layer with PagedAttention and Triton prefix prefill."""
 from dataclasses import dataclass
 from functools import cache
 from typing import ClassVar, Optional
@@ -11,10 +11,13 @@ from vllm import _custom_ops as ops
 from vllm import envs
 from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
                                               AttentionMetadata, AttentionType)
-from vllm.attention.ops.triton_unified_attention import (unified_attention)
+from vllm.attention.ops.chunked_prefill_paged_decode import (
+    chunked_prefill_paged_decode)
+from vllm.attention.ops.paged_attn import PagedAttention
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
+from vllm.v1.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.v1.attention.backends.utils import (AttentionCGSupport,
                                               AttentionMetadataBuilder,
                                               CommonAttentionMetadata)
@@ -253,6 +256,8 @@ class TritonAttentionImpl(AttentionImpl):
             else:
                 logger.info_once(
                     "Using vllm unified attention for TritonAttentionImpl")
+                from vllm.attention.ops.triton_unified_attention import (
+                    unified_attention)
                 self.unified_attention = unified_attention
 
         self.sinks = sinks
@@ -269,7 +274,7 @@ class TritonAttentionImpl(AttentionImpl):
         key: torch.Tensor,
         value: torch.Tensor,
         kv_cache: torch.Tensor,
-        attn_metadata: TritonAttentionMetadata,
+        attn_metadata: FlashAttentionMetadata,
         output: Optional[torch.Tensor] = None,
         output_scale: Optional[torch.Tensor] = None,
         output_block_scale: Optional[torch.Tensor] = None,
