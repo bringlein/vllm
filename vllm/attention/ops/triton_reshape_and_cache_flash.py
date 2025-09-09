@@ -31,9 +31,27 @@ def quant_symmetric_per_tensor_fp8e4nv(x, scale=None):
         scale = tl.where(scale == 0.0, 1.0, scale)  # Avoid div-by-zero
 
     # Quantize to float8e4nv
-    x_scaled = x / scale
-    x_clipped = tl.clamp(x_scaled, -448.0, 448.0)
-    return x_clipped.to(tl.float8e4nv)
+    x_scaled = (x / scale) #.to(tl.float32)
+    x_clipped = tl.clamp(x_scaled, -448.0, 448.0).to(tl.float16)
+    # return x_clipped.to(tl.float8e4nv)
+    x_sin_bits = tl.where(x_clipped < 0, 0x8000, 0).to(tl.uint8)
+    # x_exps = (((x_clipped).to(tl.uint16, bitcast=True) & 0b0000_0111_1000_0000) // 16).to(tl.uint8)
+    # x_exps = (((x_clipped).to(tl.uint16, bitcast=True) & 0b0111_1111_1000_0000) // 128).to(tl.int16, bitcast=True)
+    x_exps = (((x_clipped).to(tl.uint16, bitcast=True) & 0b0111_1100_0000_0000) // 128).to(tl.uint8)
+    # bfloat has 127 bias, fp8e4m3 has 7
+    # x_exps_re_biased = (x_exps - 127 + 7).to(tl.int8) 
+    # float16 has 15 as bias
+    # x_exps_re_biased = (x_exps - 15 + 7).to(tl.uint8) 
+    x_exps_re_biased = (((x_exps).to(tl.int8, bitcast=True) - 15*8 + 7*8).to(tl.uint8, bitcast=True) & 0b0111_1000).to(tl.uint8)
+    # clamp?
+    # x_exps_fp4 = (x_exps_re_biased * 8).to(tl.uint8)
+    x_exps_fp4 = tl.where(x_exps.to(tl.int8, bitcast=True) < 0, x_exps_re_biased | 0b0100_0000, x_exps_re_biased)  # to preserve signbit
+    x_exps_fp4 = tl.where(x_exps == 0, 0, x_exps_fp4)  # to preserve subnorm mode
+    # x_mantissa = (((x_clipped).to(tl.uint16, bitcast=True) & 0b0000_0000_0111_0000) // 16).to(tl.uint8)
+    # x_mantissa = (((x_clipped).to(tl.uint16, bitcast=True) & 0b0000_0011_1000_0000) // 128).to(tl.uint8)
+    x_mantissa = (((x_clipped).to(tl.uint16, bitcast=True) & 0b0000_0011_1111_1111) // 128).to(tl.uint8)
+    x_fp8_repr = (x_sin_bits | x_exps_fp4 | x_mantissa).to(tl.uint8)
+    return x_fp8_repr.to(tl.float8e4nv, bitcast=True)
 
 
 @triton.jit
@@ -189,6 +207,7 @@ def triton_reshape_and_cache_flash(
     # TODO(ngl): maybe replace with static launch grid to avoid overhead if
     #   using cudagraphs
     grid = lambda meta: (int(num_tokens), triton.cdiv(n, meta["TILE_SIZE"]))
+    # print(f"{key_cache.stride()} {value_cache.stride()}")
 
     reshape_and_cache_kernel_flash[grid](
         key_ptr=key,

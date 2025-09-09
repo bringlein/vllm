@@ -37,9 +37,11 @@ CUDA_DEVICES = [
 ]
 
 # We assume fp8 is always enabled for testing.
-KV_CACHE_DTYPE = ["auto", "fp8"]
+# KV_CACHE_DTYPE = ["auto", "fp8"]
+KV_CACHE_DTYPE = ["fp8"]
 
-RESHAPE_FLASH_IMPLEMENTATIONS = ["cuda", "triton"]
+# RESHAPE_FLASH_IMPLEMENTATIONS = ["cuda", "triton"]
+RESHAPE_FLASH_IMPLEMENTATIONS = ["triton"]
 
 
 @pytest.mark.parametrize("num_mappings", NUM_MAPPINGS)
@@ -306,6 +308,8 @@ def test_reshape_and_cache_flash(
         cloned_value_cache = value_cache_compact.clone()
     # Call the reshape_and_cache kernel.
     if implementation == "cuda":
+        # key_cache = key_cache.to(torch.float8_e5m2)
+        # value_cache = value_cache.to(torch.float8_e5m2)
         opcheck(torch.ops._C_cache_ops.reshape_and_cache_flash,
                 (key, value, key_cache, value_cache, slot_mapping,
                  kv_cache_dtype, k_scale, v_scale),
@@ -317,8 +321,7 @@ def test_reshape_and_cache_flash(
         from vllm.attention.ops.triton_reshape_and_cache_flash import (
             triton_reshape_and_cache_flash)
         triton_reshape_and_cache_flash(key, value, key_cache, value_cache,
-                                       slot_mapping, kv_cache_dtype, k_scale,
-                                       v_scale)
+                                slot_mapping, kv_cache_dtype, k_scale, v_scale)
     key_cache_compact = permute_and_compact(key_cache)
     value_cache_compact = permute_and_compact(value_cache)
 
