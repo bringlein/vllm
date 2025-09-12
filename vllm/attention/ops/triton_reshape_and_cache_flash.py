@@ -82,16 +82,20 @@ def reshape_and_cache_kernel_flash(
 
     # [TILE_SIZE]
     key_load = tl.load(key_ptr + src_key_idx + tile_pos,
-                       mask=tile_pos < (num_heads * head_size))
+                       mask=tile_pos < (num_heads * head_size)
+                       )
     if FP8_KV_CACHE:
-        if key_load.dtype.is_fp8():
-            key_tile = key_load
-        elif KV_CACHE_FP8E4M3_DTYPE:
-            key_tile = quant_symmetric_per_tensor_fp8e4nv(
-                key_load.to(tl.float32), tl.load(k_scale))
-        elif KV_CACHE_FP8E5M2_DTYPE:
-            key_tile = quant_symmetric_per_tensor_fp8e5(
-                key_load.to(tl.float32), tl.load(k_scale))
+        # if key_load.dtype.is_fp8():
+        #     key_tile = key_load
+        # elif KV_CACHE_FP8E4M3_DTYPE:
+        key_tile = quant_symmetric_per_tensor_fp8e4nv(
+            key_load.to(tl.float32), tl.load(k_scale))
+            # key_scaled = key_load.to(tl.float32) / tl.load(k_scale).to(tl.float32)[:]
+            # key_clipped = tl.clamp(key_scaled, -448.0, 448.0) #.to(tl.float16)
+            # key_tile = key_clipped.to(tl.float8e4nv)
+        # elif KV_CACHE_FP8E5M2_DTYPE:
+        #     key_tile = quant_symmetric_per_tensor_fp8e5(
+        #         key_load.to(tl.float32), tl.load(k_scale))
         if KV_CACHE_UINT8_CAST_REQUIRED:
             # here, the dtype of the pytorch tensor kv_cache is uint8, so
             #  we need to cast it to uint8 with bitcast=True to avoid the
@@ -159,8 +163,9 @@ def triton_reshape_and_cache_flash(
     head_stride = key_cache.stride()[2]
     assert head_stride == head_size, "only continous heads are supported"
 
-    kv_cache_torch_dtype = key_cache.dtype if kv_cache_dtype == "auto" \
-                            else STR_DTYPE_TO_TORCH_DTYPE[kv_cache_dtype]
+    kv_cache_torch_dtype = key_cache.dtype
+    # if kv_cache_dtype == "auto" \
+    #                         else STR_DTYPE_TO_TORCH_DTYPE[kv_cache_dtype]
     FP8_KV_CACHE = kv_cache_torch_dtype in [
         torch.float8_e4m3fn, torch.float8_e5m2, torch.uint8
     ]
@@ -175,11 +180,15 @@ def triton_reshape_and_cache_flash(
         (KV_CACHE_FP8E4M3_DTYPE or KV_CACHE_FP8E5M2_DTYPE), \
         f"unsupported kv cache dtype, got {kv_cache_torch_dtype}"
 
+    assert not KV_CACHE_UINT8_CAST_REQUIRED, f"{key_cache.dtype}"
+    print(f"{key_cache.dtype}")
+
     # heuristics instead of autotuning
     TILE_SIZE = min(2048, triton.next_power_of_2(n))
     if torch.version.hip:
         num_stages = 4
         num_warps = 8
+        # TILE_SIZE=1
     else:  # cuda
         num_stages = 10
         num_warps = 16
@@ -189,6 +198,7 @@ def triton_reshape_and_cache_flash(
     # TODO(ngl): maybe replace with static launch grid to avoid overhead if
     #   using cudagraphs
     grid = lambda meta: (int(num_tokens), triton.cdiv(n, meta["TILE_SIZE"]))
+    # print(f"grid {grid({'TILE_SIZE': TILE_SIZE})}")
 
     reshape_and_cache_kernel_flash[grid](
         key_ptr=key,

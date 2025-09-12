@@ -342,21 +342,25 @@ class TritonAttentionImpl(AttentionImpl):
                     layer._k_scale,
                     layer._v_scale,
                 )
-            elif self.kv_cache_dtype.startswith("fp8") \
-                and current_platform.is_rocm():
-                # FIXME: the triton kernel introduces to high numerical errors
-                #   if casting from fp16 to fp8 on rocm (triton 3.3 and 3.4)
-                ops.reshape_and_cache_flash(
-                    key,
-                    value,
-                    key_cache,
-                    value_cache,
-                    attn_metadata.slot_mapping,
-                    self.kv_cache_dtype,
-                    layer._k_scale,
-                    layer._v_scale,
-                )
+            # elif self.kv_cache_dtype.startswith("fp8") \
+            #     and current_platform.is_rocm():
+            #     # FIXME: the triton kernel introduces to high numerical errors
+            #     #   if casting from fp16 to fp8 on rocm (triton 3.3 and 3.4)
+            #     ops.reshape_and_cache_flash(
+            #         key,
+            #         value,
+            #         key_cache,
+            #         value_cache,
+            #         attn_metadata.slot_mapping,
+            #         self.kv_cache_dtype,
+            #         layer._k_scale,
+            #         layer._v_scale,
+            #     )
             else:
+                if self.kv_cache_dtype.startswith("fp8"):
+                    key_cache = key_cache.view(self.fp8_dtype)
+                    value_cache = value_cache.view(self.fp8_dtype)
+                print(f"key_cache dtype: {key_cache.dtype}")
                 triton_reshape_and_cache_flash(
                     key,
                     value,
@@ -369,8 +373,8 @@ class TritonAttentionImpl(AttentionImpl):
                 )
 
         if self.kv_cache_dtype.startswith("fp8"):
-            key_cache = key_cache.view(self.fp8_dtype)
-            value_cache = value_cache.view(self.fp8_dtype)
+            # key_cache = key_cache.view(self.fp8_dtype)
+            # value_cache = value_cache.view(self.fp8_dtype)
             num_tokens, num_heads, head_size = query.shape
             assert layer._q_scale == 1.0, \
                 "A non 1.0 q_scale is not currently supported."
@@ -415,6 +419,8 @@ class TritonAttentionImpl(AttentionImpl):
 
         else:
             descale_shape = (cu_seqlens_q.shape[0] - 1, key.shape[1])
+
+            # print(key_cache.dtype, query.dtype, value_cache.dtype)
 
             self.unified_attention(
                 q=query[:num_actual_tokens],

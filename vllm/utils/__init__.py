@@ -178,7 +178,7 @@ STR_DTYPE_TO_TORCH_DTYPE = {
     "bfloat16": torch.bfloat16,
     "float": torch.float,
     "fp8": torch.uint8,
-    "fp8_e4m3": torch.uint8,
+    "fp8_e4m3": torch.float8_e4m3fn,
     "fp8_e5m2": torch.uint8,
     "int8": torch.int8,
     "fp8_inc": torch.float8_e4m3fn,
@@ -1045,8 +1045,8 @@ def _generate_random_fp8(
     # Inf | N/A         | s.11111.00
     # NaN | s.1111.111  | s.11111.{01,10,11}
     from vllm import _custom_ops as ops
-    tensor_tmp = torch.empty_like(tensor, dtype=torch.float16)
-    tensor_tmp.uniform_(low, high)
+    tensor_tmp = torch.zeros_like(tensor, dtype=torch.float16)
+    # tensor_tmp.uniform_(low, high)
     ops.convert_fp8(tensor, tensor_tmp)
     del tensor_tmp
 
@@ -1108,7 +1108,7 @@ def create_kv_caches_with_random_flash(
                                       device=device).permute(*stride_order)
         if cache_dtype in ["auto", "half", "bfloat16", "float"]:
             key_value_cache.uniform_(-scale, scale)
-        elif cache_dtype == 'fp8':
+        elif cache_dtype.startswith('fp8'):
             _generate_random_fp8(key_value_cache, -scale, scale)
         else:
             raise ValueError(

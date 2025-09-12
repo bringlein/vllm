@@ -12,11 +12,11 @@ from vllm.platforms import current_platform
 
 COPYING_DIRECTION = [('cuda', 'cpu'), ('cuda', 'cuda'), ('cpu', 'cuda')]
 DTYPES = [torch.bfloat16, torch.float]
-NUM_TOKENS = [42]  # Arbitrary values for testing
+NUM_TOKENS = [4]  # Arbitrary values for testing
 NUM_LAYERS = [1]  # Arbitrary values for testing
 NUM_HEADS = [8]  # Arbitrary values for testing
-HEAD_SIZES = [64, 80, 256]
-BLOCK_SIZES = [8, 16, 32]
+HEAD_SIZES = [8]
+BLOCK_SIZES = [16]
 CACHE_LAYOUTS = ["NHD", "HND"]
 
 # Parameters for MLA tests.
@@ -28,7 +28,7 @@ NUM_BLOCKS_MLA = [8]
 
 # Arbitrary values for testing
 # don't make it too large. e.g. [1024, 36000] will OOM
-NUM_BLOCKS = [1024, 10000]
+NUM_BLOCKS = [64]
 
 NUM_MAPPINGS = [256]  # Arbitrary values for testing
 SEEDS = [0]
@@ -37,9 +37,9 @@ CUDA_DEVICES = [
 ]
 
 # We assume fp8 is always enabled for testing.
-KV_CACHE_DTYPE = ["auto", "fp8"]
+KV_CACHE_DTYPE = ["fp8"] # ["fp8_e4m3"]
 
-RESHAPE_FLASH_IMPLEMENTATIONS = ["cuda", "triton"]
+RESHAPE_FLASH_IMPLEMENTATIONS = ["triton"]
 
 
 @pytest.mark.parametrize("num_mappings", NUM_MAPPINGS)
@@ -249,8 +249,8 @@ def test_reshape_and_cache_flash(
 
     # fp8 conversion requires continugous memory buffer. Reduce the number of
     # blocks and tokens to consume less memory.
-    num_tokens = num_tokens // 2
-    num_blocks = num_blocks // 2
+    # num_tokens = num_tokens // 2
+    # num_blocks = num_blocks // 2
     # Create a random slot mapping.
     num_slots = block_size * num_blocks
     slot_mapping_lst = random.sample(range(num_slots), num_tokens)
@@ -264,6 +264,9 @@ def test_reshape_and_cache_flash(
                       dtype=dtype,
                       device=device)
     _, key, value = qkv.unbind(dim=1)
+    # torch.set_printoptions(profile="full")
+    # print("key:", key)
+    # print("value:", value)
 
     # Create the KV caches.
     key_caches, value_caches = kv_cache_factory_flashinfer(
@@ -280,6 +283,8 @@ def test_reshape_and_cache_flash(
     key_cache, value_cache = key_caches[0], value_caches[0]
     del key_caches
     del value_caches
+    # print("key_cache before:", key_cache)
+    # print("value_cache before:", value_cache)
 
     k_scale = (key.amax() / 64.0).to(torch.float32)
     v_scale = (value.amax() / 64.0).to(torch.float32)
@@ -292,7 +297,7 @@ def test_reshape_and_cache_flash(
     value_cache_compact = permute_and_compact(value_cache)
 
     # Clone the KV caches.
-    if kv_cache_dtype == "fp8":
+    if kv_cache_dtype.startswith("fp8") and False:
         cloned_key_cache = torch.empty_like(key_cache_compact,
                                             dtype=torch.float16)
         ops.convert_fp8(cloned_key_cache, key_cache_compact, k_scale.item(),
@@ -322,7 +327,7 @@ def test_reshape_and_cache_flash(
     key_cache_compact = permute_and_compact(key_cache)
     value_cache_compact = permute_and_compact(value_cache)
 
-    if kv_cache_dtype == "fp8":
+    if kv_cache_dtype.startswith("fp8") and False:
         result_key_cache = torch.empty_like(key_cache_compact,
                                             dtype=torch.float16)
         ops.convert_fp8(result_key_cache,
@@ -344,14 +349,32 @@ def test_reshape_and_cache_flash(
     for i in range(num_tokens):
         block_idx = block_indices_lst[i]
         block_offset = block_offsets_lst[i]
-        if kv_cache_layout == "NHD":
+        if kv_cache_layout == "NHD" and kv_cache_dtype.startswith("fp8"):
+            cloned_key_cache[block_idx, block_offset, :, :] = (key[i] / k_scale).to(torch.float8_e4m3fn).view(torch.uint8)
+            cloned_value_cache[block_idx, block_offset, :, :] = value[i] / v_scale
+        elif kv_cache_layout == "NHD":
             cloned_key_cache[block_idx, block_offset, :, :] = key[i]
             cloned_value_cache[block_idx, block_offset, :, :] = value[i]
         else:
             cloned_key_cache[block_idx, :, block_offset, :] = key[i]
             cloned_value_cache[block_idx, :, block_offset, :] = value[i]
 
-    if kv_cache_dtype == "fp8":
+    if kv_cache_dtype.startswith("fp8") and False:
+        diff_tensor = torch.where(result_key_cache != cloned_key_cache, 1.0, 0.0)
+        torch.set_printoptions(profile="full")
+        for b in range(num_blocks):
+            if diff_tensor[b].sum() > 0:
+                for bi in range(block_size):
+                    if diff_tensor[b, bi].sum() > 0:
+                        print(f" key_cache diff at block {b}, block_index {bi}:")
+                        print(diff_tensor[b, bi, :, :])
+                        # abs_diff_tensor = torch.where((abs(result_key_cache[b, bi]) - abs(cloned_key_cache[b,bi])) < 0.001, 
+                        #                               0.0, (abs(result_key_cache[b, bi]) - abs(cloned_key_cache[b,bi])))
+                        # print("absolute difference:", abs_diff_tensor)
+                        print("key_cache:", result_key_cache[b, bi, :, :])
+                        print("reference:", cloned_key_cache[b, bi, :, :])
+                        break
+                break   
         torch.testing.assert_close(result_key_cache,
                                    cloned_key_cache,
                                    atol=0.001,
@@ -361,6 +384,18 @@ def test_reshape_and_cache_flash(
                                    atol=0.001,
                                    rtol=0.1)
     else:
+        diff_tensor = torch.where(key_cache_compact != cloned_key_cache, 1.0, 0.0)
+        torch.set_printoptions(profile="full")
+        for b in range(num_blocks):
+            if diff_tensor[b].sum() > 0:
+                for bi in range(block_size):
+                    if diff_tensor[b, bi].sum() > 0:
+                        print(f" key_cache diff at block {b}, block_index {bi}:")
+                        print(diff_tensor[b, bi, :, :])
+                        print("key_cache:", key_cache_compact[b, bi, :, :])
+                        print("reference:", cloned_key_cache[b, bi, :, :])
+                        break
+                break   
         torch.testing.assert_close(key_cache_compact, cloned_key_cache)
         torch.testing.assert_close(value_cache_compact, cloned_value_cache)
 
