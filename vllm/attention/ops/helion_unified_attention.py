@@ -14,6 +14,7 @@ import helion.language as hl
     ), 
     static_shapes=True,
     allow_warp_specialize=True,
+    dot_precision='ieee',
     )
 def kernel_helion_v0_attention(
     t_output,  # [num_tokens, num_query_heads, head_size]
@@ -44,8 +45,7 @@ def kernel_helion_v0_attention(
         query_start = t_query_start_lens[seq_idx]
         query_end = t_query_start_lens[seq_idx + 1]
         query_len = query_end - query_start
-        # context_len = seq_len - query_len
-        pages_per_seq = (seq_len + page_size - 1) // page_size 
+        context_len = seq_len - query_len
 
         for tile_q in hl.tile(query_start, query_end, block_size=None):
             for tile_m in hl.tile(kv_head_idx * num_queries_per_kv, (kv_head_idx+1)*num_queries_per_kv, 
@@ -55,11 +55,18 @@ def kernel_helion_v0_attention(
                 q = t_query[tile_q, tile_m, :]
                 # (tile_m, HEAD_SIZE)
                 q_view = q.view([block_m_size, head_size])
-                m = torch.full([block_m_size], float("-inf"), dtype=torch.float32, device=q.device)
-                l = torch.full_like(m, 1.0)
+                m = hl.full([block_m_size], float("-inf"), dtype=torch.float32) # device=q.device)
+                # l = hl.full_like(m, 1.0)
+                l = hl.full([block_m_size], 1.0, dtype=torch.float32)
                 # (tile_m, HEAD_SIZE)
-                acc = hl.zeros([block_m_size, head_size], dtype=torch.float32, device=q.device)
-                for tile_n in hl.tile(pages_per_seq, block_size=None):
+                acc = hl.zeros([block_m_size, head_size], dtype=torch.float32)  # , device=q.device)
+                
+                # num_blocks = (seq_len + page_size - 1) // page_size 
+                # adjust for causal mask
+                max_seq_prefix_len = context_len + tile_q.end + (tile_m.block_size - 1) // num_queries_per_kv + 1
+                max_seq_prefix_len = torch.minimum(max_seq_prefix_len, seq_len)
+                num_blocks = torch.ceil(max_seq_prefix_len / page_size)
+                for tile_n in hl.tile(num_blocks, block_size=None):
                     block_n_size = tile_n.block_size * page_size
                     blk_idxs = t_block_tables[seq_idx, tile_n].view(-1)
                     # (tile_n, PAGE_SIZE, 1, HEAD_SIZE)
@@ -115,7 +122,7 @@ def helion_unified_attention(
     k_descale,
     v_descale,
     alibi_slopes=None,
-    is_decode_only=False,
+    # is_decode_only=False,
 ):
     assert causal, "Only causal attention is supported"
     assert q_descale is None, "Q scales not supported"
