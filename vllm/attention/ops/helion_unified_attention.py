@@ -52,9 +52,9 @@ def kernel_helion_v0_attention(
                               block_size=num_queries_per_kv):
                 block_m_size = tile_m.block_size * tile_q.block_size
                 # (tile_q, tile_m, HEAD_SIZE)
-                q = t_query[tile_q, tile_m, :]
+                q = t_query[tile_q, tile_m, :].view([block_m_size, head_size])
                 # (tile_m, HEAD_SIZE)
-                q_view = q.view([block_m_size, head_size])
+                # q = q.view([block_m_size, head_size])
                 m = hl.full([block_m_size], float("-inf"), dtype=torch.float32) # device=q.device)
                 # l = hl.full_like(m, 1.0)
                 l = hl.full([block_m_size], 1.0, dtype=torch.float32)
@@ -70,13 +70,16 @@ def kernel_helion_v0_attention(
                     block_n_size = tile_n.block_size * page_size
                     blk_idxs = t_block_tables[seq_idx, tile_n].view(-1)
                     # (tile_n, PAGE_SIZE, 1, HEAD_SIZE)
-                    k = t_key_cache[blk_idxs, :, kv_head_idx, :]
+                    k = t_key_cache[blk_idxs, :, kv_head_idx, :].squeeze(2)
                     # (tile_n, PAGE_SIZE, HEAD_SIZE)
                     v = t_value_cache[blk_idxs, :, kv_head_idx, :]
                     # (HEAD_SIZE, tile_n)
-                    k_view = k.view([block_n_size, head_size]).transpose(0, 1)
+                    k = k.view([block_n_size, head_size]).transpose(0, 1)
                     # (tile_m, tile_n)
-                    qk = torch.mm(q_view, k_view) * scale
+                    qk = torch.mm(q, k) * scale
+                    # qk = q @ k.permute(2, 0, 1)
+                    # qk = q @ k
+                    # qk *= scale
                     # to check the shape...
                     # qk = qk.view([block_m_size, block_n_size])
                     # (tile_m)
@@ -134,12 +137,11 @@ def helion_unified_attention(
 
     use_alibi_slopes = alibi_slopes is not None
 
-    block_size = v.shape[1]
     num_seqs = len(seqused_k)
-    num_query_heads = q.shape[1]
-    num_kv_heads = k.shape[2]
-    num_queries_per_kv = num_query_heads // num_kv_heads
-    head_size = q.shape[2]
+    # num_query_heads = q.shape[1]
+    # num_kv_heads = k.shape[2]
+    # num_queries_per_kv = num_query_heads // num_kv_heads
+    # head_size = q.shape[2]
 
     kernel_helion_v0_attention(
         t_output=out,
