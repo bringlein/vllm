@@ -24,8 +24,9 @@ triton_find_seq_idx = """
     
 @helion.kernel(
     config=helion.Config(
-        block_sizes=[32, 2], 
+        # block_sizes=[32, 2], 
         # block_sizes=[32, 1], 
+        block_sizes=[16, 1], 
         indexing='pointer', 
         l2_groupings=[1], num_stages=1, num_warps=8, pid_type='xyz',
     ), 
@@ -44,6 +45,7 @@ def kernel_helion_v1_attention(
     # k_scale,
     # v_scale,
     t_query_start_lens, # [num_seqs+1]
+    t_query_slots,
     # num_seqs,
     # unused, to trigger autotuning...?
     # max_seqlen,
@@ -56,6 +58,9 @@ def kernel_helion_v1_attention(
     page_size = hl.specialize(t_value_cache.size(1))
     num_queries_per_kv = hl.specialize(num_query_heads // num_kv_heads)
 
+    assert page_size == t_key_cache.size(1)
+    assert head_size == t_key_cache.size(3)
+
     num_tokens = t_query.shape[0]
     num_seqs = t_seq_lens.shape[0]
     # TODO: need upper bound?
@@ -66,16 +71,19 @@ def kernel_helion_v1_attention(
         # seq_idx = find_seq_idx(t_query_start_lens, tile_q.begin, num_seqs) #, None, False)
         # seq_idx = (t_query_start_lens == tile_q.begin).nonzero()
         
-        # t_seq_idx = torch.zeros(1, dtype=t_seq_lens.dtype)
-        # hl.inline_triton(find_seq_idx, (t_query_start_lens, tile_q.begin, num_seqs , None, False), t_seq_idx)
-        # seq_idx = t_seq_idx
-        seq_idx = hl.inline_triton(triton_find_seq_idx,
-                                   {
-                                       'num_seqs': num_seqs,
-                                       'query_start_len_ptr': t_query_start_lens,
-                                       'target_idx': tile_q.begin,
-                                   }, 
-                                   torch.zeros(1, dtype=t_seq_lens.dtype))
+        # seq_idx = hl.inline_triton(triton_find_seq_idx,
+        #                            {
+        #                                'num_seqs': num_seqs,
+        #                                'query_start_len_ptr': t_query_start_lens,
+        #                                'target_idx': tile_q.begin,
+        #                            }, 
+        #                            torch.zeros(1, dtype=t_seq_lens.dtype))
+        
+        # seq_idx = int(t_query_slots[tile_q.begin])
+        # assert seq_idx.shape[0] == 1
+        seq_idxs = t_query_slots[tile_q.index]
+        # TODO: enough padding/masing? 
+        seq_idx = seq_idxs.min().unsqueeze(0)
 
         seq_len = t_seq_lens[seq_idx]
         query_start = t_query_start_lens[seq_idx]
@@ -87,9 +95,10 @@ def kernel_helion_v1_attention(
                           block_size=num_queries_per_kv):
             block_m_size = tile_m.block_size * tile_q.block_size
             # (tile_q, tile_m, HEAD_SIZE)
-            q = t_query[tile_q, tile_m, :].view([block_m_size, head_size])
+            q = t_query[tile_q, tile_m, :]
+            # TODO: mask q block
             # (tile_m, HEAD_SIZE)
-            # q = q.view([block_m_size, head_size])
+            q = q.view([block_m_size, head_size])
             m = hl.full([block_m_size], float("-inf"), dtype=torch.float32) # device=q.device)
             # l = hl.full_like(m, 1.0)
             l = hl.full([block_m_size], 1.0, dtype=torch.float32)
@@ -103,11 +112,14 @@ def kernel_helion_v1_attention(
             num_blocks = torch.ceil(max_seq_prefix_len / page_size)
             for tile_n in hl.tile(num_blocks, block_size=None):
                 block_n_size = tile_n.block_size * page_size
-                blk_idxs = t_block_tables[seq_idx, tile_n].view(-1)
+                blk_idxs = t_block_tables[seq_idx, tile_n].view([tile_n.block_size * seq_idx.shape[0]]) #.view(-1)
                 # (tile_n, PAGE_SIZE, 1, HEAD_SIZE)
-                k = t_key_cache[blk_idxs, :, kv_head_idx, :].squeeze(2)
+                k = t_key_cache[blk_idxs, :, kv_head, :].squeeze(2)
+                # k = k.view([tile_n.block_size * seq_idx.shape[0], page_size, kv_head.block_size, head_size])
+                # k = k.view([tile_n.block_size, page_size, kv_head.block_size, head_size])
+                k = k.view([tile_n, page_size, head_size])
                 # (tile_n, PAGE_SIZE, HEAD_SIZE)
-                v = t_value_cache[blk_idxs, :, kv_head_idx, :]
+                v = t_value_cache[blk_idxs, :, kv_head, :]
                 # (HEAD_SIZE, tile_n)
                 k = k.view([block_n_size, head_size]).transpose(0, 1)
                 # (tile_m, tile_n)
@@ -177,6 +189,11 @@ def helion_unified_attention(
     # num_kv_heads = k.shape[2]
     # num_queries_per_kv = num_query_heads // num_kv_heads
     # head_size = q.shape[2]
+    t_query_slots = torch.empty([q.shape[0]], dtype=seqused_k.dtype)
+    for si in range(0, seqused_k.shape[0]):
+        t_query_slots[cu_seqlens_q[si]:cu_seqlens_q[si+1]] = si
+    print(t_query_slots)
+    print(k.shape)
 
     kernel_helion_v1_attention(
         t_output=out,
@@ -189,6 +206,7 @@ def helion_unified_attention(
         # k_scale=k_descale,
         # v_scale=v_descale,
         t_query_start_lens=cu_seqlens_q,
+        t_query_slots=t_query_slots,
         # num_seqs=num_seqs,
         # max_seqlen=max_seqlen_k,
         # max_query_len=max_seqlen_q,
