@@ -370,9 +370,9 @@ class CudaPlatformBase(Platform):
         elif selected_backend == _Backend.TRITON_ATTN:
             logger.info_once("Using Triton backend.")
             return TRITON_ATTN
-            elif selected_backend == _Backend.EXPERIMENTAL_HELION_ATTN:
-                logger.info_once("Using EXPERIMENTAL Helion backend on V1 engine.")
-                return EXPERIMENTAL_HELION_ATTN
+        elif selected_backend == _Backend.EXPERIMENTAL_HELION_ATTN:
+            logger.info_once("Using EXPERIMENTAL Helion backend on V1 engine.")
+            return EXPERIMENTAL_HELION_ATTN
         elif selected_backend == _Backend.FLASH_ATTN:
             logger.info_once("Using Flash Attention backend.")
             return FLASH_ATTN_V1
