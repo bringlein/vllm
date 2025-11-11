@@ -5,18 +5,58 @@ import torch
 import helion
 import helion.language as hl
 
+from .triton_unified_attention import unified_attention as triton_baseline_unified_attention
+
+
+def _triton_baseline_fn(
+    t_output,  # [num_tokens, num_query_heads, head_size]
+    t_query,  # [num_tokens, num_query_heads, head_size]
+    t_key_cache,  # [num_blks, blk_size, num_kv_heads, head_size]
+    t_value_cache,  # [num_blks, blk_size, num_kv_heads, head_size]
+    t_block_tables,  # [num_seqs, max_num_blocks_per_seq]
+    t_seq_lens,  # [num_seqs]
+    scale,
+    # k_scale,
+    # v_scale,
+    t_query_start_lens, # [num_seqs+1]
+    t_query_slots,
+    # num_seqs,
+    # unused, to trigger autotuning...?
+    max_seqlen,
+    max_query_len,
+):
+    return triton_baseline_unified_attention(
+        q=t_query,
+        k=t_key_cache,
+        v=t_value_cache,
+        out=t_output,
+        cu_seqlens_q=t_query_start_lens,
+        max_seqlen_q=max_query_len,
+        seqused_k=t_seq_lens,
+        max_seqlen_k=max_seqlen,
+        softmax_scale=scale,
+        causal=True,
+        window_size=(-1, -1),
+        block_table=t_block_tables,
+        softcap=0,
+        q_descale=None,
+        k_descale=None,
+        v_descale=None,
+    )
+
 
 @helion.kernel(
-    config=helion.Config(
-        # block_sizes=[32, 2], 
-        # block_sizes=[32, 1], 
-        block_sizes=[16, 1], 
-        indexing='pointer', 
-        l2_groupings=[1], num_stages=1, num_warps=8, pid_type='xyz',
-    ), 
-    static_shapes=True,
-    allow_warp_specialize=True,
+    # config=helion.Config(
+    #     # block_sizes=[32, 2], 
+    #     # block_sizes=[32, 1], 
+    #     block_sizes=[16, 1], 
+    #     indexing='pointer', 
+    #     l2_groupings=[1], num_stages=1, num_warps=8, pid_type='xyz',
+    # ), 
+    # static_shapes=True,
+    # allow_warp_specialize=True,
     # dot_precision='ieee',
+    autotune_baseline_fn=_triton_baseline_fn
     )
 def kernel_helion_v2_attention(
     t_output,  # [num_tokens, num_query_heads, head_size]
@@ -110,7 +150,7 @@ def kernel_helion_v2_attention(
                 blk_idxs = t_block_tables[seq_idx, tile_n].view([tile_n.block_size * num_par_seq]) #.view(-1)
                 # (tile_n, PAGE_SIZE, 1, HEAD_SIZE)
                 # k = t_key_cache[blk_idxs, :, kv_head, :] # .squeeze(2)
-                k = t_key_cache[blk_idxs, 0:page_size, kv_head, 0:head_size]
+                k = t_key_cache[blk_idxs, :, kv_head, :]
                 # k = k.view([tile_n, page_size, head_size])
                 # k = k.view([tile_n.block_size * seq_idx.block_size * kv_head.block_size, page_size, head_size])
                 k = k.view([num_par_seq, tile_n.block_size * kv_head.block_size, page_size, head_size])
@@ -121,7 +161,8 @@ def kernel_helion_v2_attention(
                 k = k.view([num_par_seq, tile_n.block_size * kv_head.block_size * page_size, head_size]).transpose(1, 2)
                 # (tile_m, tile_n)
                 # qk = torch.mm(q, k) * scale
-                qk = torch.bmm(q.expand([num_par_seq, block_m_size, head_size]), k) * scale
+                # TODO: why .to(k.dtype)?
+                qk = torch.bmm(q.expand([num_par_seq, block_m_size, head_size]).to(k.dtype), k) * scale
                 # qk = q @ k.permute(2, 0, 1)
                 # qk = q @ k
                 # qk *= scale
