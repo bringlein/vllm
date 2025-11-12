@@ -54,9 +54,15 @@ def _triton_baseline_fn(
     #     indexing='pointer', 
     #     l2_groupings=[1], num_stages=1, num_warps=8, pid_type='xyz',
     # ), 
-    # static_shapes=True,
-    # allow_warp_specialize=True,
+    static_shapes=True,
+    allow_warp_specialize=True,
     # dot_precision='ieee',
+    # config=helion.Config(block_sizes=[16, 2], 
+    #                      indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'pointer', 'pointer', 'tensor_descriptor'], 
+    #                      l2_groupings=[4], load_eviction_policies=['', '', '', 'last', 'last', '', 'first', 'last'], 
+    #                      loop_orders=[[1, 0, 2], [0, 1]], num_stages=8, num_warps=4, pid_type='flat', 
+    #                      range_flattens=[None, True, None, None], range_multi_buffers=[None, None, True, None], 
+    #                      range_num_stages=[], range_unroll_factors=[0, 2, 3, 1]),
     autotune_baseline_fn=_triton_baseline_fn
     )
 def kernel_helion_v2_attention(
@@ -75,7 +81,7 @@ def kernel_helion_v2_attention(
     # unused, to trigger autotuning...?
     max_seqlen,
     max_query_len,
-    max_used_querylen_padded: hl.constexpr,
+    # max_used_querylen_padded: hl.constexpr,
     # is_decode_only: hl.constexpr,
 ):
     head_size = hl.specialize(t_query.size(2))
@@ -236,6 +242,8 @@ def helion_unified_attention(
     causal,
     window_size,
     block_table,
+    query_slots_mapping,
+    max_query_len_int: int,
     softcap,
     q_descale,
     k_descale,
@@ -258,13 +266,13 @@ def helion_unified_attention(
     # num_kv_heads = k.shape[2]
     # num_queries_per_kv = num_query_heads // num_kv_heads
     # head_size = q.shape[2]
-    t_query_slots = torch.empty([q.shape[0]], dtype=seqused_k.dtype)
-    for si in range(0, seqused_k.shape[0]):
-        t_query_slots[cu_seqlens_q[si]:cu_seqlens_q[si+1]] = si
+    # t_query_slots = torch.empty([q.shape[0]], dtype=seqused_k.dtype)
+    # for si in range(0, seqused_k.shape[0]):
+    #     t_query_slots[cu_seqlens_q[si]:cu_seqlens_q[si+1]] = si
     # print(t_query_slots)
     # print(k.shape)
     
-    max_used_querylen_padded = max_seqlen_q if max_seqlen_q == 1 else next_power_of_2(max(16, max_seqlen_q))
+    # max_used_querylen_padded = max_seqlen_q if max_seqlen_q == 1 else next_power_of_2(max(16, max_seqlen_q))
 
     kernel_helion_v2_attention(
         t_output=out,
@@ -277,13 +285,15 @@ def helion_unified_attention(
         # k_scale=k_descale,
         # v_scale=v_descale,
         t_query_start_lens=cu_seqlens_q,
-        t_query_slots=t_query_slots,
+        # t_query_slots=t_query_slots,
+        t_query_slots=query_slots_mapping,
         # num_seqs=num_seqs,
         max_seqlen=max_seqlen_k,
         # max_query_len=max_seqlen_q,
-        max_query_len=int(max_seqlen_q), # need not to be tensor?
+        # max_query_len=int(max_seqlen_q), # need not to be tensor?
+        max_query_len=max_query_len_int, # need not to be tensor?
         # is_decode_only=bool(is_decode_only),
-        max_used_querylen_padded = int(max_used_querylen_padded),
+        # max_used_querylen_padded = int(max_used_querylen_padded),
     )
 
 
