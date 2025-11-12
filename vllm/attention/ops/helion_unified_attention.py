@@ -63,6 +63,9 @@ def _triton_baseline_fn(
     #                      loop_orders=[[1, 0, 2], [0, 1]], num_stages=8, num_warps=4, pid_type='flat', 
     #                      range_flattens=[None, True, None, None], range_multi_buffers=[None, None, True, None], 
     #                      range_num_stages=[], range_unroll_factors=[0, 2, 3, 1]),
+    # config=helion.Config(block_sizes=[16, 4], 
+    #                      indexing=['pointer', 'tensor_descriptor', 'pointer', 'pointer', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'pointer'], l2_groupings=[4], load_eviction_policies=['', 'last', 'last', '', '', 'first', 'first', 'first'], loop_orders=[[1, 0, 2], [1, 0]], num_stages=5, num_warps=4, pid_type='flat', range_flattens=[None, True, True, True], range_multi_buffers=[None, False, True, True], range_num_stages=[], range_unroll_factors=[0, 1, 2, 1], range_warp_specializes=[]),
+    config=helion.Config(block_sizes=[32, 4], indexing=['pointer', 'pointer', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor'], l2_groupings=[2], load_eviction_policies=['', '', '', '', '', 'last', 'last', ''], loop_orders=[[1, 2, 0], [1, 0]], num_stages=6, num_warps=8, pid_type='flat', range_flattens=[None, True, True, True], range_multi_buffers=[None, None, None, False], range_num_stages=[], range_unroll_factors=[0, 1, 2, 1], range_warp_specializes=[]), 
     autotune_baseline_fn=_triton_baseline_fn
     )
 def kernel_helion_v2_attention(
@@ -113,10 +116,10 @@ def kernel_helion_v2_attention(
         query_len = query_end - query_start
         context_len = seq_len - query_len
         
-        cur_qblock_start = qblock_idx * q_block_size
+        cur_qblock_start = query_start + qblock_idx * q_block_size
         # cur_qblock_end = torch.minimum(query_end, (qblock_idx + 1) * q_block_size)
         # cur_qblock_end = min(query_end, (qblock_idx + 1) * q_block_size)
-        cur_qblock_end = (qblock_idx + 1) * q_block_size
+        cur_qblock_end = query_start + (qblock_idx + 1) * q_block_size
 
         # calculating q block index
         # q_block_idxs = torch.where(tile_q.index < query_len, tile_q.index, None)
