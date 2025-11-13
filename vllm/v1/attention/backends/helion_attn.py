@@ -47,7 +47,6 @@ class HelionAttentionMetadata:
 
     num_actual_tokens: int  # Number of tokens excluding padding.
     max_query_len: int
-    max_query_len_cpu: int
     query_start_loc: torch.Tensor
     max_seq_len: int
     seq_lens: torch.Tensor
@@ -106,7 +105,6 @@ class HelionAttentionMetadataBuilder(AttentionMetadataBuilder[HelionAttentionMet
     ) -> HelionAttentionMetadata:
         num_actual_tokens = common_attn_metadata.num_actual_tokens
         max_query_len = common_attn_metadata.max_query_len
-        max_query_len_cpu = max_query_len.cpu().item()
 
         max_seq_len = common_attn_metadata.max_seq_len
         query_start_loc = common_attn_metadata.query_start_loc
@@ -135,7 +133,6 @@ class HelionAttentionMetadataBuilder(AttentionMetadataBuilder[HelionAttentionMet
         attn_metadata = HelionAttentionMetadata(
             num_actual_tokens=num_actual_tokens,
             max_query_len=max_query_len,
-            max_query_len_cpu=max_query_len_cpu,
             query_start_loc=query_start_loc,
             max_seq_len=max_seq_len,
             seq_lens=seq_lens,
@@ -368,11 +365,13 @@ class HelionAttentionImpl(AttentionImpl):
             alibi_slopes=self.alibi_slopes,
             window_size=self.sliding_window,
             block_table=block_table,
-            max_query_len_int=attn_metadata.max_query_len_cpu,
+            max_query_len_int=attn_metadata.max_query_len,
             softcap=self.logits_soft_cap,
             q_descale=None,  # Not supported
-            k_descale=layer._k_scale.expand(descale_shape),
-            v_descale=layer._v_scale.expand(descale_shape),
+            k_descale=None,
+            v_descale=None,
+            # k_descale=layer._k_scale.expand(descale_shape),
+            # v_descale=layer._v_scale.expand(descale_shape),
             # sinks=self.sinks,
             # output_scale=output_scale,
         )
