@@ -8,11 +8,11 @@ from torch._inductor.runtime.runtime_utils import next_power_of_2
 
 from .triton_unified_attention import unified_attention as triton_baseline_unified_attention
 
-__use_forced_precompiled__ = False
-import os
-if os.getenv("HELION_FORCE_PRECOMPILED", "0") == "1":
-    from ._helion_attn_compiled_ import kernel_helion_v2_attention as _helion_precompiled_kernel
-    __use_forced_precompiled__ = True
+# __use_forced_precompiled__ = False
+# import os
+# if os.getenv("HELION_FORCE_PRECOMPILED", "0") == "1":
+#     from ._helion_attn_compiled_ import kernel_helion_v2_attention as _helion_precompiled_kernel
+#     __use_forced_precompiled__ = True
 
 def _triton_baseline_fn(
     t_output,  # [num_tokens, num_query_heads, head_size]
@@ -61,6 +61,8 @@ def _triton_baseline_fn(
     config=helion.Config(block_sizes=[32, 4], indexing=['pointer', 'pointer', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor'], l2_groupings=[2], load_eviction_policies=['', '', '', '', '', 'last', 'last', ''], loop_orders=[[1, 2, 0], [1, 0]], num_stages=6, num_warps=8, pid_type='flat', range_flattens=[None, True, True, True], range_multi_buffers=[None, None, None, False], range_num_stages=[], range_unroll_factors=[0, 1, 2, 1], range_warp_specializes=[]), 
     autotune_baseline_fn=_triton_baseline_fn,
     # autotune_effort="quick",
+    print_output_code=False,
+    print_repro=False,
     )
 def kernel_helion_v2_attention(
     t_output,  # [num_tokens, num_query_heads, head_size]
@@ -203,10 +205,10 @@ def helion_unified_attention(
 
     # max_used_querylen_padded = max_query_len_int if max_query_len_int == 1 else next_power_of_2(max(16, max_query_len_int))
 
-    kernel_fn = kernel_helion_v2_attention if not __use_forced_precompiled__ else _helion_precompiled_kernel
+    # kernel_fn = kernel_helion_v2_attention if not __use_forced_precompiled__ else _helion_precompiled_kernel
     
-    # kernel_helion_v2_attention(
-    kernel_fn(
+    # kernel_fn(
+    kernel_helion_v2_attention(
         t_output=out,
         t_query=q,
         t_key_cache=k,
