@@ -8,6 +8,11 @@ from torch._inductor.runtime.runtime_utils import next_power_of_2
 
 from .triton_unified_attention import unified_attention as triton_baseline_unified_attention
 
+__use_forced_precompiled__ = False
+import os
+if os.getenv("HELION_FORCE_PRECOMPILED", "0") == "1":
+    from ._helion_attn_compiled_ import kernel_helion_v2_attention as _helion_precompiled_kernel
+    __use_forced_precompiled__ = True
 
 def _triton_baseline_fn(
     t_output,  # [num_tokens, num_query_heads, head_size]
@@ -21,6 +26,7 @@ def _triton_baseline_fn(
     # v_scale,
     t_query_start_lens, # [num_seqs+1]
     max_query_len,
+    num_seqs,
 ):
     max_seqlen = t_seq_lens.max()
     return triton_baseline_unified_attention(
@@ -68,6 +74,7 @@ def kernel_helion_v2_attention(
     # v_scale,
     t_query_start_lens, # [num_seqs+1]
     max_query_len,  # must be on cpu
+    num_seqs, # on cpu? 
     # max_used_querylen_padded: hl.constexpr,
 ):
     head_size = hl.specialize(t_query.size(2))
@@ -80,13 +87,14 @@ def kernel_helion_v2_attention(
     assert page_size == t_key_cache.size(1)
     assert head_size == t_key_cache.size(3)
 
-    num_tokens = t_query.shape[0]
-    num_seqs = t_seq_lens.shape[0]
+    # num_tokens = t_query.shape[0]
+    # num_seqs = t_seq_lens.shape[0]
 
 
     q_block_size = hl.register_block_size(4, int(max_query_len))
-    # q_block_size = hl.register_block_size(4, int(max_used_querylen_padded))
     max_qblocks = (max_query_len + q_block_size -1) // q_block_size
+    # q_block_size = hl.register_block_size(4, int(max_used_querylen_padded))
+    # max_qblocks = (max_used_querylen_padded + q_block_size -1) // q_block_size
 
     for seq_idx, kv_head_idx, qblock_idx in hl.grid([num_seqs, num_kv_heads, max_qblocks]):
         seq_len = t_seq_lens[seq_idx]
@@ -172,6 +180,7 @@ def helion_unified_attention(
     window_size,
     block_table,
     max_query_len_int: int,
+    num_seqs: int,
     softcap,
     q_descale,
     k_descale,
@@ -192,9 +201,12 @@ def helion_unified_attention(
         q.element_size() >= 2 or block_size >= 32
     ), "Block size must be at least 32 for fp8"
 
-    # max_used_querylen_padded = max_seqlen_q if max_seqlen_q == 1 else next_power_of_2(max(16, max_seqlen_q))
+    # max_used_querylen_padded = max_query_len_int if max_query_len_int == 1 else next_power_of_2(max(16, max_query_len_int))
 
-    kernel_helion_v2_attention(
+    kernel_fn = kernel_helion_v2_attention if not __use_forced_precompiled__ else _helion_precompiled_kernel
+    
+    # kernel_helion_v2_attention(
+    kernel_fn(
         t_output=out,
         t_query=q,
         t_key_cache=k,
@@ -207,6 +219,7 @@ def helion_unified_attention(
         t_query_start_lens=cu_seqlens_q,
         max_query_len=max_query_len_int, # need not to be a tensor
         # max_used_querylen_padded = int(max_used_querylen_padded),
+        num_seqs=num_seqs,
     )
 
 
