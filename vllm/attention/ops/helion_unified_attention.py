@@ -43,22 +43,22 @@ def _triton_baseline_fn(
         v_descale=None,
     )
 
+nv_config = helion.Config(block_sizes=[32, 4], indexing=['pointer', 'pointer', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor'], l2_groupings=[2], load_eviction_policies=['', '', '', '', '', 'last', 'last', ''], loop_orders=[[1, 2, 0], [1, 0]], num_stages=6, num_warps=8, pid_type='flat', range_flattens=[None, True, True, True], range_multi_buffers=[None, None, None, False], range_num_stages=[], range_unroll_factors=[0, 1, 2, 1], range_warp_specializes=[])
+amd_config = helion.Config(block_sizes=[32, 8], indexing=['tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['', '', '', '', '', '', ''], loop_orders=[[2, 1, 0], [0, 1]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, None, None], range_multi_buffers=[None, None, None, None], range_num_stages=[], range_unroll_factors=[0, 0, 0, 0], range_warp_specializes=[])
+
+config = nv_config if torch.version.cuda else amd_config
+
 
 @helion.kernel(
     allow_warp_specialize=True,
     # dot_precision='ieee',
-    # config=helion.Config(block_sizes=[16, 2], 
-    #                      indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'pointer', 'pointer', 'tensor_descriptor'], 
-    #                      l2_groupings=[4], load_eviction_policies=['', '', '', 'last', 'last', '', 'first', 'last'], 
-    #                      loop_orders=[[1, 0, 2], [0, 1]], num_stages=8, num_warps=4, pid_type='flat', 
-    #                      range_flattens=[None, True, None, None], range_multi_buffers=[None, None, True, None], 
-    #                      range_num_stages=[], range_unroll_factors=[0, 2, 3, 1]),
-    config=helion.Config(block_sizes=[32, 4], indexing=['pointer', 'pointer', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor'], l2_groupings=[2], load_eviction_policies=['', '', '', '', '', 'last', 'last', ''], loop_orders=[[1, 2, 0], [1, 0]], num_stages=6, num_warps=8, pid_type='flat', range_flattens=[None, True, True, True], range_multi_buffers=[None, None, None, False], range_num_stages=[], range_unroll_factors=[0, 1, 2, 1], range_warp_specializes=[]), 
+    config = config,
     autotune_baseline_fn=_triton_baseline_fn,
     # autotune_effort="quick",
     static_shapes=False,
     print_output_code=False,
     print_repro=False,
+    index_dtype=torch.int64,
     )
 def kernel_helion_v2_attention(
     t_output,  # [num_tokens, num_query_heads, head_size]
