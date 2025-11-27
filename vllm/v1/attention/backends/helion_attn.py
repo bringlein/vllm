@@ -356,7 +356,7 @@ class HelionAttentionImpl(AttentionImpl):
         # if False:
             print(
                 f"DEBUG: calling triton attention for seq lens "
-                f"{attn_metadata.max_query_len} and batch size "
+                f"{attn_metadata.max_seq_len} and batch size "
                 f"{len(seqused_k)}."
             )
             from vllm.attention.ops.triton_unified_attention import (
