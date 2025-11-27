@@ -354,7 +354,7 @@ class HelionAttentionImpl(AttentionImpl):
 
         if attn_metadata.max_seq_len < 64 or len(seqused_k) < 4:
             print(
-                f"DEBUG: calling triton attention for seq lens"
+                f"DEBUG: calling triton attention for seq lens "
                 f"{attn_metadata.max_query_len} and batch size "
                 f"{len(seqused_k)}."
             )

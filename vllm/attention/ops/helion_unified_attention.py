@@ -22,6 +22,7 @@ def _triton_baseline_fn(
     t_query_start_lens,  # [num_seqs+1]
     max_query_len,
     num_seqs,
+    is_decode_only,
 ):
     max_seqlen = t_seq_lens.max()
     return triton_baseline_unified_attention(
@@ -44,7 +45,8 @@ def _triton_baseline_fn(
     )
 
 
-nv_config = helion.Config(
+nv_configs = [
+    helion.Config(
     block_sizes=[32, 4],
     indexing=[
         "pointer",
@@ -68,7 +70,16 @@ nv_config = helion.Config(
     range_num_stages=[],
     range_unroll_factors=[0, 1, 2, 1],
     range_warp_specializes=[],
-)
+), 
+helion.Config(block_sizes=[4, 4], indexing=['tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer'], l2_groupings=[16], load_eviction_policies=['first', 'last', '', '', '', '', ''], loop_orders=[[2, 1, 0], [0, 1]], num_stages=3, num_warps=4, pid_type='flat', range_flattens=[None, None, None, True], range_multi_buffers=[None, None, None, None], range_num_stages=[], range_unroll_factors=[0, 1, 0, 1], range_warp_specializes=[]),
+helion.Config(block_sizes=[4, 1], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer'], l2_groupings=[16], load_eviction_policies=['', '', 'last', '', '', 'first', '', ''], loop_orders=[[2, 1, 0], [1, 0]], num_stages=2, num_warps=1, pid_type='flat', range_flattens=[None, True, None, False], range_multi_buffers=[None, False, True, False], range_num_stages=[], range_unroll_factors=[0, 0, 2, 1], range_warp_specializes=[]),
+helion.Config(block_sizes=[16, 2], indexing=['pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'pointer'], l2_groupings=[4], load_eviction_policies=['', 'last', 'last', '', '', 'first', 'first', 'first'], loop_orders=[[1, 2, 0], [1, 0]], num_stages=5, num_warps=4, pid_type='flat', range_flattens=[None, True, True, True], range_multi_buffers=[None, False, True, True], range_num_stages=[], range_unroll_factors=[0, 1, 2, 1], range_warp_specializes=[]),
+helion.Config(block_sizes=[32, 8], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor'], l2_groupings=[1], load_eviction_policies=['', '', '', '', 'first', '', 'first', ''], loop_orders=[[2, 1, 0], [1, 0]], num_stages=6, num_warps=8, pid_type='flat', range_flattens=[None, True, True, True], range_multi_buffers=[None, None, None, False], range_num_stages=[], range_unroll_factors=[0, 1, 2, 1], range_warp_specializes=[]),
+]
+nv_configs2 = [
+    helion.Config(block_sizes=[4, 4], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer'], l2_groupings=[4], load_eviction_policies=['first', 'last', 'first', 'last', '', 'last', 'last'], loop_orders=[[2, 1, 0], [1, 0]], num_stages=1, num_warps=8, pid_type='flat', range_flattens=[None, False, False, True], range_multi_buffers=[None, None, False, None], range_num_stages=[], range_unroll_factors=[0, 2, 0, 1], range_warp_specializes=[]),
+    helion.Config(block_sizes=[4, 4], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer'], l2_groupings=[4], load_eviction_policies=['first', 'last', 'first', '', '', 'last', 'last'], loop_orders=[[2, 1, 0], [1, 0]], num_stages=1, num_warps=8, pid_type='flat', range_flattens=[None, False, False, True], range_multi_buffers=[None, None, False, None], range_num_stages=[], range_unroll_factors=[0, 1, 0, 1], range_warp_specializes=[]),
+]
 amd_config = helion.Config(
     block_sizes=[32, 8],
     indexing=[
@@ -94,17 +105,20 @@ amd_config = helion.Config(
     range_warp_specializes=[],
 )
 
-config = nv_config if torch.version.cuda else amd_config
+config = nv_configs if torch.version.cuda else amd_config
 
 
 @helion.kernel(
     allow_warp_specialize=True,
-    # dot_precision='ieee',
-    config=config,
-    autotune_baseline_fn=_triton_baseline_fn,
-    # autotune_effort="quick",
     static_shapes=False,
-    print_output_code=False,
+    # dot_precision='ieee',
+    # config=config,
+    # configs=nv_configs,
+    configs=nv_configs2,
+    autotune_baseline_fn=_triton_baseline_fn,
+    autotune_accuracy_check=False,  # since we can't adjust ATOL manually
+    autotune_effort="quick",
+    # print_output_code=False,
     print_repro=False,
     index_dtype=torch.int64,
 )
@@ -122,6 +136,7 @@ def kernel_helion_v2_attention(
     max_query_len,  # must be on cpu
     num_seqs,  # on cpu?
     # max_used_querylen_padded: hl.constexpr,
+    is_decode_only: hl.constexpr,
 ):
     head_size = hl.specialize(t_query.size(2))
     num_kv_heads = hl.specialize(t_key_cache.size(2))
@@ -133,9 +148,9 @@ def kernel_helion_v2_attention(
     assert page_size == t_key_cache.size(1)
     assert head_size == t_key_cache.size(3)
 
-    q_block_size = hl.register_block_size(4, int(max_query_len))
+    q_block_size = hl.register_block_size(1, int(max_query_len))
     max_qblocks = (max_query_len + q_block_size - 1) // q_block_size
-    # q_block_size = hl.register_block_size(4, int(max_used_querylen_padded))
+    # q_block_size = hl.register_block_size(1, int(max_used_querylen_padded))
     # max_qblocks = (max_used_querylen_padded + q_block_size -1) // q_block_size
 
     for seq_idx, kv_head_idx, qblock_idx in hl.grid(
@@ -274,4 +289,5 @@ def helion_unified_attention(
         max_query_len=max_query_len_int,  # need not to be a tensor
         # max_used_querylen_padded = int(max_used_querylen_padded),
         num_seqs=num_seqs,
+        is_decode_only = max_seqlen_q == 1
     )
