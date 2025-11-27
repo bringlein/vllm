@@ -232,7 +232,8 @@ def kernel_helion_v2_attention(
                 k = k.view([block_n_size, head_size]).transpose(0, 1)
                 # k = k.view([-1, head_size]).transpose(0, 1)
                 # (tile_m, tile_n)
-                qk = torch.mm(q, k) * scale
+                # qk = torch.mm(q, k, out_dtype=torch.float32) * scale
+                qk = hl.dot(q, k, out_dtype=torch.float32) * scale
                 # DEBUG: to check the shape...
                 # qk = qk.view([block_m_size, block_n_size])
                 # (tile_m)
@@ -253,8 +254,8 @@ def kernel_helion_v2_attention(
                 # v_view = v.view([-1, head_size])
                 # (tile_m, HEAD_SIZE)
                 # acc += torch.mm(P.to(v.dtype), v_view)
-                acc = torch.addmm(acc, P.to(v.dtype), v_view)
-                # acc = hl.dot(P.to(v.dtype), v_view, acc=acc)
+                # acc = torch.addmm(acc, P.to(v.dtype), v_view)
+                acc = hl.dot(P.to(v.dtype), v_view, acc=acc)
 
             # epilogue
             acc = acc / L[:, None]
