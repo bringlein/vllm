@@ -352,8 +352,8 @@ class HelionAttentionImpl(AttentionImpl):
 
         # descale_shape = (cu_seqlens_q.shape[0] - 1, key.shape[1])
 
-        if attn_metadata.max_seq_len < 64: #  or len(seqused_k) < 4:
-        # if False:
+        # if attn_metadata.max_seq_len < 64: #  or len(seqused_k) < 4:
+        if False:
             print(
                 f"DEBUG: calling triton attention for seq lens "
                 f"{attn_metadata.max_query_len} and batch size "
