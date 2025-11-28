@@ -153,7 +153,7 @@ def kernel_helion_v2_attention(
     assert page_size == t_key_cache.size(1)
     assert head_size == t_key_cache.size(3)
 
-    qk_scale = scale * 1.44269504  # 1/log(2)
+    # qk_scale = scale * 1.44269504  # 1/log(2)
 
     q_block_size = hl.register_block_size(1, int(max_query_len))
     max_qblocks = (max_query_len + q_block_size - 1) // q_block_size
@@ -237,24 +237,26 @@ def kernel_helion_v2_attention(
                 k = k.view([-1, head_size]).transpose(0, 1)
                 # (tile_m, tile_n)
                 # qk = torch.mm(q, k, out_dtype=torch.float32) * scale
-                # qk = hl.dot(q, k, out_dtype=torch.float32) * scale
-                S = hl.dot(q, k, out_dtype=torch.float32)
+                qk = hl.dot(q, k, out_dtype=torch.float32) * scale
+                # S = hl.dot(q, k, out_dtype=torch.float32)
                 # DEBUG: to check the shape...
                 # qk = qk.view([block_m_size, block_n_size])
                 # (tile_m)
-                M_j = torch.maximum(M, torch.amax(S, 1) * qk_scale)
+                M_j = torch.maximum(M, torch.amax(qk, 1))
+                # M_j = torch.maximum(M, torch.amax(S, 1) * qk_scale)
                 # hl.atomic_max(M, [0], torch.amax(qk, 1))
                 # (tile_m, tile_n)
-                # P = torch.exp(qk - M_j[:, None])
-                qk = S * qk_scale
-                P = torch.exp2(qk - M_j[:, None])
+                P = torch.exp(qk - M_j[:, None])
+                # qk = S * qk_scale
+                # P = torch.exp2(qk - M_j[:, None])
                 # (tile_m, )
                 L_j = torch.sum(P, 1)
                 # (tile_m, )
-                # alpha = torch.exp(M - M_j)
-                alpha = torch.exp2(M - M_j)
+                alpha = torch.exp(M - M_j)
+                # alpha = torch.exp2(M - M_j)
                 # (tile_m, HEAD_SIZE)
-                acc *= alpha[:, None]
+                # acc *= alpha[:, None]
+                acc = acc * alpha[:, None]
                 # acc.mul_(alpha[:, None])
                 # L *= alpha + L_j
                 # produces wrong triton code (L doesn't get overwritten, maybe due to loop boundaries?)
@@ -271,7 +273,7 @@ def kernel_helion_v2_attention(
                 acc = hl.dot(P.to(v.dtype), v_view, out_dtype=torch.float32, acc=acc)
                 # acc = hl.dot(P, v_view.to(torch.float32), out_dtype=torch.float32, acc=acc)
 
-            M += torch.log2(L)
+            # M += torch.log2(L)
             # M.add_(torch.log2(L))
             # epilogue
             acc = acc / L[:, None]
@@ -281,7 +283,7 @@ def kernel_helion_v2_attention(
             # ).to(t_output.dtype)
             t_output[tile_q, tile_m, :] = acc.view(
                 [-1, tile_m.block_size, head_size]
-            ) # .to(t_output.dtype)
+            ).to(t_output.dtype)
 
 
 def helion_unified_attention(
