@@ -256,10 +256,10 @@ def kernel_helion_v2_attention(
                 # (tile_m, HEAD_SIZE)
                 acc *= alpha[:, None]
                 # acc.mul_(alpha[:, None])
-                L *= alpha + L_j
+                # L *= alpha + L_j
                 # produces wrong triton code (L doesn't get overwritten, maybe due to loop boundaries?)
                 # L.mul_(torch.add(alpha, L_j))
-                # L = L * alpha + L_j
+                L = (L * alpha) + L_j
                 M = M_j
 
                 # (tile_n, HEAD_SIZE)
