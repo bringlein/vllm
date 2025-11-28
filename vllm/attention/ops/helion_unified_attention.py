@@ -70,11 +70,11 @@ nv_configs = [
     range_num_stages=[],
     range_unroll_factors=[0, 1, 2, 1],
     range_warp_specializes=[],
-), 
-helion.Config(block_sizes=[4, 4], indexing=['tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer'], l2_groupings=[16], load_eviction_policies=['first', 'last', '', '', '', '', ''], loop_orders=[[2, 1, 0], [0, 1]], num_stages=3, num_warps=4, pid_type='flat', range_flattens=[None, None, None, True], range_multi_buffers=[None, None, None, None], range_num_stages=[], range_unroll_factors=[0, 1, 0, 1], range_warp_specializes=[]),
-helion.Config(block_sizes=[4, 1], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer'], l2_groupings=[16], load_eviction_policies=['', '', 'last', '', '', 'first', '', ''], loop_orders=[[2, 1, 0], [1, 0]], num_stages=2, num_warps=1, pid_type='flat', range_flattens=[None, True, None, False], range_multi_buffers=[None, False, True, False], range_num_stages=[], range_unroll_factors=[0, 0, 2, 1], range_warp_specializes=[]),
-helion.Config(block_sizes=[16, 2], indexing=['pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'pointer'], l2_groupings=[4], load_eviction_policies=['', 'last', 'last', '', '', 'first', 'first', 'first'], loop_orders=[[1, 2, 0], [1, 0]], num_stages=5, num_warps=4, pid_type='flat', range_flattens=[None, True, True, True], range_multi_buffers=[None, False, True, True], range_num_stages=[], range_unroll_factors=[0, 1, 2, 1], range_warp_specializes=[]),
-helion.Config(block_sizes=[32, 8], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor'], l2_groupings=[1], load_eviction_policies=['', '', '', '', 'first', '', 'first', ''], loop_orders=[[2, 1, 0], [1, 0]], num_stages=6, num_warps=8, pid_type='flat', range_flattens=[None, True, True, True], range_multi_buffers=[None, None, None, False], range_num_stages=[], range_unroll_factors=[0, 1, 2, 1], range_warp_specializes=[]),
+    ), 
+# helion.Config(block_sizes=[4, 4], indexing=['tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer'], l2_groupings=[16], load_eviction_policies=['first', 'last', '', '', '', '', ''], loop_orders=[[2, 1, 0], [0, 1]], num_stages=3, num_warps=4, pid_type='flat', range_flattens=[None, None, None, True], range_multi_buffers=[None, None, None, None], range_num_stages=[], range_unroll_factors=[0, 1, 0, 1], range_warp_specializes=[]),
+# helion.Config(block_sizes=[4, 1], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer'], l2_groupings=[16], load_eviction_policies=['', '', 'last', '', '', 'first', '', ''], loop_orders=[[2, 1, 0], [1, 0]], num_stages=2, num_warps=1, pid_type='flat', range_flattens=[None, True, None, False], range_multi_buffers=[None, False, True, False], range_num_stages=[], range_unroll_factors=[0, 0, 2, 1], range_warp_specializes=[]),
+# helion.Config(block_sizes=[16, 2], indexing=['pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'pointer'], l2_groupings=[4], load_eviction_policies=['', 'last', 'last', '', '', 'first', 'first', 'first'], loop_orders=[[1, 2, 0], [1, 0]], num_stages=5, num_warps=4, pid_type='flat', range_flattens=[None, True, True, True], range_multi_buffers=[None, False, True, True], range_num_stages=[], range_unroll_factors=[0, 1, 2, 1], range_warp_specializes=[]),
+# helion.Config(block_sizes=[32, 8], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor'], l2_groupings=[1], load_eviction_policies=['', '', '', '', 'first', '', 'first', ''], loop_orders=[[2, 1, 0], [1, 0]], num_stages=6, num_warps=8, pid_type='flat', range_flattens=[None, True, True, True], range_multi_buffers=[None, None, None, False], range_num_stages=[], range_unroll_factors=[0, 1, 2, 1], range_warp_specializes=[]),
 ]
 nv_configs2 = [
     helion.Config(block_sizes=[4, 4], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer'], l2_groupings=[4], load_eviction_policies=['first', 'last', 'first', 'last', '', 'last', 'last'], loop_orders=[[2, 1, 0], [1, 0]], num_stages=1, num_warps=8, pid_type='flat', range_flattens=[None, False, False, True], range_multi_buffers=[None, None, False, None], range_num_stages=[], range_unroll_factors=[0, 2, 0, 1], range_warp_specializes=[]),
@@ -124,6 +124,7 @@ config = nv_configs[0] if torch.version.cuda else amd_config
     autotune_effort="quick",
     print_output_code=False,
     print_repro=False,
+    debug_dtype_asserts=True,
     index_dtype=torch.int64,
 )
 def kernel_helion_v2_attention(
@@ -140,7 +141,7 @@ def kernel_helion_v2_attention(
     max_query_len,  # must be on cpu
     num_seqs,  # on cpu?
     # max_used_querylen_padded: hl.constexpr,
-    is_decode_only: hl.constexpr,
+    # is_decode_only: hl.constexpr,
 ):
     head_size = hl.specialize(t_query.size(2))
     num_kv_heads = hl.specialize(t_key_cache.size(2))
@@ -151,6 +152,8 @@ def kernel_helion_v2_attention(
 
     assert page_size == t_key_cache.size(1)
     assert head_size == t_key_cache.size(3)
+
+    qk_scale = scale * 1.44269504  # 1/log(2)
 
     q_block_size = hl.register_block_size(1, int(max_query_len))
     max_qblocks = (max_query_len + q_block_size - 1) // q_block_size
@@ -198,14 +201,15 @@ def kernel_helion_v2_attention(
             L = hl.full([q.size(0)], 1.0, dtype=torch.float32)
             acc = hl.zeros([q.size(0), head_size], dtype=torch.float32)
 
-            # adjust for causal mask
-            max_seq_prefix_len = (
-                context_len
-                + tile_q.end
-                + (tile_m.block_size + num_queries_per_kv - 1) // num_queries_per_kv
-            )
-            max_seq_prefix_len = torch.minimum(max_seq_prefix_len, seq_len)
-            num_blocks = torch.ceil(max_seq_prefix_len / page_size)
+            # # adjust for causal mask
+            # max_seq_prefix_len = (
+            #     context_len
+            #     + tile_q.end
+            #     + (tile_m.block_size + num_queries_per_kv - 1) // num_queries_per_kv
+            # )
+            # max_seq_prefix_len = torch.minimum(max_seq_prefix_len, seq_len)
+            # num_blocks = torch.ceil(max_seq_prefix_len / page_size)
+            num_blocks = torch.ceil(seq_len / page_size)
             for tile_n in hl.tile(num_blocks, block_size=None):
                 block_n_size = tile_n.block_size * page_size
                 # block_n_size = (tile_n.end - tile_n.begin) * page_size
@@ -229,42 +233,51 @@ def kernel_helion_v2_attention(
                 # (tile_n, PAGE_SIZE, HEAD_SIZE)
                 v = t_value_cache[blk_idxs, :, kv_head_idx, :]
                 # (HEAD_SIZE, tile_n)
-                k = k.view([block_n_size, head_size]).transpose(0, 1)
-                # k = k.view([-1, head_size]).transpose(0, 1)
+                # k = k.view([block_n_size, head_size]).transpose(0, 1)
+                k = k.view([-1, head_size]).transpose(0, 1)
                 # (tile_m, tile_n)
                 # qk = torch.mm(q, k, out_dtype=torch.float32) * scale
-                qk = hl.dot(q, k, out_dtype=torch.float32) * scale
+                # qk = hl.dot(q, k, out_dtype=torch.float32) * scale
+                qk = hl.dot(q, k, out_dtype=torch.float32) * qk_scale
                 # DEBUG: to check the shape...
                 # qk = qk.view([block_m_size, block_n_size])
                 # (tile_m)
                 M_j = torch.maximum(M, torch.amax(qk, 1))
+                # hl.atomic_max(M, [0], torch.amax(qk, 1))
                 # (tile_m, tile_n)
-                P = torch.exp(qk - M_j[:, None])
+                # P = torch.exp(qk - M_j[:, None])
+                P = torch.exp2(qk - M_j[:, None])
                 # (tile_m, )
                 L_j = torch.sum(P, 1)
                 # (tile_m, )
-                alpha = torch.exp(M - M_j)
+                # alpha = torch.exp(M - M_j)
+                alpha = torch.exp2(M - M_j)
                 # (tile_m, HEAD_SIZE)
                 acc *= alpha[:, None]
+                # acc.mul_(alpha[:, None])
                 L *= alpha + L_j
+                # L.mul_(torch.add(alpha, L_j)) 
                 M = M_j
 
                 # (tile_n, HEAD_SIZE)
-                v_view = v.view([block_n_size, head_size])
-                # v_view = v.view([-1, head_size])
+                # v_view = v.view([block_n_size, head_size])
+                v_view = v.view([-1, head_size])
                 # (tile_m, HEAD_SIZE)
                 # acc += torch.mm(P.to(v.dtype), v_view)
                 # acc = torch.addmm(acc, P.to(v.dtype), v_view)
-                acc = hl.dot(P.to(v.dtype), v_view, acc=acc)
+                acc = hl.dot(P.to(v.dtype), v_view, out_dtype=torch.float32, acc=acc)
+                # acc = hl.dot(P, v_view.to(torch.float32), out_dtype=torch.float32, acc=acc)
 
+            M += torch.log2(L)
             # epilogue
             acc = acc / L[:, None]
+            # acc.div_(L[:, None])
             # t_output[tile_q, tile_m, :] = acc.view(
             #     [tile_q.block_size, tile_m.block_size, head_size]
             # ).to(t_output.dtype)
             t_output[tile_q, tile_m, :] = acc.view(
                 [-1, tile_m.block_size, head_size]
-            ).to(t_output.dtype)
+            ) # .to(t_output.dtype)
 
 
 def helion_unified_attention(
@@ -320,5 +333,5 @@ def helion_unified_attention(
         max_query_len=max_query_len_int,  # need not to be a tensor
         # max_used_querylen_padded = int(max_used_querylen_padded),
         num_seqs=num_seqs,
-        is_decode_only = max_seqlen_q == 1
+        # is_decode_only = max_seqlen_q == 1
     )
