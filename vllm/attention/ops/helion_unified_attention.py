@@ -20,10 +20,12 @@ def _triton_baseline_fn(
     # k_scale,
     # v_scale,
     t_query_start_lens,  # [num_seqs+1]
-    max_query_len,
+    # max_query_len,
+    max_used_query_len_padded,
     num_seqs,
 ):
     max_seqlen = t_seq_lens.max()
+    max_query_len = t_query_start_lens.diff().max()
     return triton_baseline_unified_attention(
         q=t_query,
         k=t_key_cache,
@@ -46,6 +48,8 @@ def _triton_baseline_fn(
 # config = nv_config if torch.version.cuda else amd_config
 
 dbg_config = helion.Config(block_sizes=[2, 4], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[32], load_eviction_policies=['last', 'last', 'last', 'first', 'first', 'last', 'first', '', 'last'], loop_orders=[[1, 2, 0]], num_stages=2, num_warps=4, pid_type='flat', range_flattens=[None, False], range_multi_buffers=[None, True], range_num_stages=[0, 2], range_unroll_factors=[0, 1], range_warp_specializes=[])
+# TODO: bug, it does not use tl.program_id(1) if changing to xyz...? 
+# # dbg_config = helion.Config(block_sizes=[2, 4], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[32], load_eviction_policies=['last', 'last', 'last', 'first', 'first', 'last', 'first', '', 'last'], loop_orders=[[1, 2, 0]], num_stages=2, num_warps=4, pid_type='xyz', range_flattens=[None, False], range_multi_buffers=[None, True], range_num_stages=[0, 2], range_unroll_factors=[0, 1], range_warp_specializes=[])
 # dbg_config = helion.Config(block_sizes=[4, 2], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[32], load_eviction_policies=['last', 'first', 'last', 'first', 'first', 'last', 'first', '', 'last'], loop_orders=[[1, 2, 0]], num_stages=1, num_warps=4, pid_type='persistent_interleaved', range_flattens=[True, False], range_multi_buffers=[True, True], range_num_stages=[1, 2], range_unroll_factors=[0, 1], range_warp_specializes=[])
 
 
@@ -76,7 +80,8 @@ def kernel_helion_v3_attention(
     # k_scale,
     # v_scale,
     t_query_start_lens,  # [num_seqs+1]
-    max_query_len,  # must be on cpu
+    # max_query_len,  # must be on cpu
+    max_used_query_len_padded: hl.constexpr,
     num_seqs,  # must be on cpu
 ):
     head_size = hl.specialize(t_query.size(2))
@@ -88,17 +93,13 @@ def kernel_helion_v3_attention(
     assert page_size == t_key_cache.size(1)
     assert head_size == t_key_cache.size(3)
 
-    q_block_size = hl.register_block_size(1, int(max_query_len))
-    # max_qblocks = (max_query_len + q_block_size - 1) // q_block_size
-    # q_block_size = hl.register_block_size(1, int(max_used_querylen_padded))
-    # max_qblocks = (max_used_querylen_padded + q_block_size -1) // q_block_size
-    # if is_decode_only:
-    #     max_qblocks = 1
+    # q_block_size = hl.register_block_size(1, int(max_query_len))
+    q_block_size = hl.register_block_size(1, int(max_used_query_len_padded))
     num_pages_at_once = hl.register_block_size(1, 512//page_size)
 
     for seq_tile, tile_m, tile_q in hl.tile(
-        # [num_seqs, num_query_heads, max_qblocks],
-        [num_seqs, num_query_heads, max_query_len],
+        # [num_seqs, num_query_heads, max_query_len],
+        [num_seqs, num_query_heads, max_used_query_len_padded],
         block_size=[1, num_queries_per_kv, q_block_size],
     ):
         seq_idx = seq_tile.begin # is scalar
@@ -227,9 +228,12 @@ def helion_unified_attention(
         "Block size must be at least 32 for fp8"
     )
 
-    # max_used_querylen_padded = max_query_len_int if max_query_len_int == 1
-    #   else torch._inductor.runtime.runtime_utils.next_power_of_2(
-    #     max(16, max_query_len_int))
+    # we need to declare "max_query_len" as hl.constexpr, in order to make 
+    #  the launch grid correct all the time (i.e. trigger recompilation 
+    #  for decode only batches, etc.). At the same time, we don't want to
+    #  recompile all the time, hence we do it in steps of powers of 2.
+    max_used_querylen_padded = 1 if max_seqlen_q == 1 \
+      else torch._inductor.runtime.runtime_utils.next_power_of_2(max_seqlen_q)
 
     kernel_helion_v3_attention(
         t_output=out,
@@ -243,8 +247,8 @@ def helion_unified_attention(
         # v_scale=v_descale,
         t_query_start_lens=cu_seqlens_q,
         # max_query_len=max_query_len_int,  # need not to be a tensor
-        max_query_len=max_seqlen_q,  # need not to be a tensor
-        # max_used_querylen_padded = int(max_used_querylen_padded),
+        # max_query_len=max_seqlen_q,  # need not to be a tensor
+        max_used_query_len_padded = int(max_used_querylen_padded),
         num_seqs=num_seqs,
         # is_decode_only = max_seqlen_q == 1
     )
