@@ -89,7 +89,7 @@ def kernel_helion_v3_attention(
     assert head_size == t_key_cache.size(3)
 
     q_block_size = hl.register_block_size(1, int(max_query_len))
-    max_qblocks = (max_query_len + q_block_size - 1) // q_block_size
+    # max_qblocks = (max_query_len + q_block_size - 1) // q_block_size
     # q_block_size = hl.register_block_size(1, int(max_used_querylen_padded))
     # max_qblocks = (max_used_querylen_padded + q_block_size -1) // q_block_size
     # if is_decode_only:
@@ -97,7 +97,8 @@ def kernel_helion_v3_attention(
     num_pages_at_once = hl.register_block_size(1, 512//page_size)
 
     for seq_tile, tile_m, tile_q in hl.tile(
-        [num_seqs, num_query_heads, max_qblocks],
+        # [num_seqs, num_query_heads, max_qblocks],
+        [num_seqs, num_query_heads, max_query_len],
         block_size=[1, num_queries_per_kv, q_block_size],
     ):
         seq_idx = seq_tile.begin # is scalar
