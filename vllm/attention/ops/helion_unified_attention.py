@@ -109,151 +109,153 @@ def kernel_helion_v3_attention(
     num_pages_at_once = hl.register_block_size(1, 1)
     # num_pages_at_once = hl.register_block_size(1, 1)
 
-    for seq_tile, tile_m, tile_q in hl.tile(
-        [num_seqs, num_query_heads, max_query_len],
+    for seq_tile, tile_m in hl.tile(
+        [num_seqs, num_query_heads],
         # [num_seqs, num_query_heads, max_used_query_len_padded],
-        block_size=[1, num_queries_per_kv, q_block_size],
+        block_size=[1, num_queries_per_kv],
     ):
         seq_idx = seq_tile.begin # is scalar
         seq_len = t_seq_lens[seq_idx]
         # TODO: return if seq_len == 0? How does it work with cudagraphs? 
         query_start = t_query_start_lens[seq_idx]
         query_end = t_query_start_lens[seq_idx + 1]
-        # query_len = query_end - query_start
+        #query_len = query_end - query_start
         # context_len = seq_len - query_len
 
-        block_m_size = tile_m.block_size * tile_q.block_size
-        kv_head_idx = tile_m.begin // num_queries_per_kv
-        # kv_head_idx = torch.amin(tile_m.index // num_queries_per_kv)
+        for tile_q in hl.tile(query_start, query_end, block_size=q_block_size):
+            block_m_size = tile_m.block_size * tile_q.block_size
+            kv_head_idx = tile_m.begin // num_queries_per_kv
+            # kv_head_idx = torch.amin(tile_m.index // num_queries_per_kv)
 
-        adjusted_tile_q_index = query_start + tile_q.index
-        # (tile_q, tile_m, HEAD_SIZE)
-        q = hl.load(t_query, 
-                    # [tile_q.index, tile_m.index, hl.arange(head_size)], 
-                    [adjusted_tile_q_index, tile_m.index, hl.arange(head_size)], 
-                    # extra_mask=tile_q.index[:, None, None] < query_end,
-                    # extra_mask=tile_q.index < query_len,
-                    extra_mask=adjusted_tile_q_index[:, None, None] < query_end,
-                    # TODO: others??
-                    )
-        # (tile_m, HEAD_SIZE)
-        q = q.view([block_m_size, head_size])
+            # (tile_q, tile_m, HEAD_SIZE)
+            # q = hl.load(t_query, 
+            #             # [tile_q.index, tile_m.index, hl.arange(head_size)], 
+            #             [adjusted_tile_q_index, tile_m.index, hl.arange(head_size)], 
+            #             # extra_mask=tile_q.index[:, None, None] < query_end,
+            #             # extra_mask=tile_q.index < query_len,
+            #             extra_mask=adjusted_tile_q_index[:, None, None] < query_end,
+            #             # TODO: others??
+            #             )
+            q = t_query[tile_q, tile_m, :]
+            # (tile_m, HEAD_SIZE)
+            q = q.view([block_m_size, head_size])
 
-        M = hl.full(
-            [block_m_size], float("-inf"), dtype=torch.float32
-        )
-        L = hl.full([block_m_size], 1.0, dtype=torch.float32)
-        acc = hl.zeros(
-            [block_m_size, head_size], dtype=torch.float32
-        )
+            M = hl.full(
+                [block_m_size], float("-inf"), dtype=torch.float32
+            )
+            L = hl.full([block_m_size], 1.0, dtype=torch.float32)
+            acc = hl.zeros(
+                [block_m_size, head_size], dtype=torch.float32
+            )
 
-        num_blocks = torch.ceil(seq_len / page_size)
-        # adjust for causal mask
-        # max_seq_prefix_len = (
-        #     context_len
-        #     # + tile_q.end
-        #     + cur_qblock_end
-        #     + (tile_m.block_size + num_queries_per_kv - 1) // num_queries_per_kv
-        # )
-        # max_seq_prefix_len = torch.minimum(max_seq_prefix_len, seq_len)
-        # num_blocks = torch.ceil(max_seq_prefix_len / page_size)
-        for tile_n in hl.tile(num_blocks, block_size=num_pages_at_once):
-            block_n_size = num_pages_at_once * page_size
-            blk_idxs = t_block_tables[seq_idx, tile_n]
-            # blk_idxs = hl.load(t_block_tables,
-            #     [seq_idx, tile_n],
-            #     # TODO: necessary? or how is it with partial tile_n?
-            #     # NOT necessary, according to generated triton
-            #     extra_mask=tile_n.index[None, :] < num_blocks,
+            num_blocks = torch.ceil(seq_len / page_size)
+            # adjust for causal mask
+            # max_seq_prefix_len = (
+            #     context_len
+            #     # + tile_q.end
+            #     + cur_qblock_end
+            #     + (tile_m.block_size + num_queries_per_kv - 1) // num_queries_per_kv
             # )
-            blk_idxs = blk_idxs.view([num_pages_at_once]).to(torch.int64)
-            
-            k_load = t_key_cache[blk_idxs, :, kv_head_idx, :]
-            # total_token_in_tile_offsets = tile_n.begin * page_size + hl.arange(page_size)
-            # # WRONG for tile_n > 1 
-            # token_mask = torch.where(
-            #     total_token_in_tile_offsets < seq_len, 1, 0).to(torch.bool)[None, :, None]
-            # # also WRONG for tile_n > 1 
-            # page_mask = torch.where(
-            #     tile_n.index < num_blocks, 1, 0).to(torch.bool)[:, None, None]
-            # # page mask NOT necessary, is correctly handled by code gen
-            # combined_mask = token_mask & page_mask
+            # max_seq_prefix_len = torch.minimum(max_seq_prefix_len, seq_len)
+            # num_blocks = torch.ceil(max_seq_prefix_len / page_size)
+            for tile_n in hl.tile(num_blocks, block_size=num_pages_at_once):
+                block_n_size = num_pages_at_once * page_size
+                blk_idxs = t_block_tables[seq_idx, tile_n]
+                # blk_idxs = hl.load(t_block_tables,
+                #     [seq_idx, tile_n],
+                #     # TODO: necessary? or how is it with partial tile_n?
+                #     # NOT necessary, according to generated triton
+                #     extra_mask=tile_n.index[None, :] < num_blocks,
+                # )
+                blk_idxs = blk_idxs.view([num_pages_at_once]).to(torch.int64)
 
-            # # (tile_n, PAGE_SIZE, 1, HEAD_SIZE)
-            # k_load = hl.load(t_key_cache, 
-            #            [blk_idxs, hl.arange(page_size), kv_head_idx, hl.arange(head_size)],
-            #            # mask has only 3 dims, since kv_head_idx is size 1 dim and is removed 
-            #            # extra_mask=total_token_in_tile_offsets[None, :, None] < seq_len \
-            #            #    &  tile_n.index[:, None, None] < num_blocks
-            #            # need to do explicit mask, because & in here doesn't work due to broadcasting?
-            #            extra_mask=combined_mask
-            #            )
-            # DEBUG: to assert shape
-            k_load = k_load.view([tile_n, page_size, head_size])
-            # (tile_n, PAGE_SIZE, HEAD_SIZE)
-            v_load = t_value_cache[blk_idxs, :, kv_head_idx, :]
-            # v_load = hl.load(t_value_cache, 
-            #            [blk_idxs, hl.arange(page_size), kv_head_idx, hl.arange(head_size)],
-            #            # extra_mask=total_token_in_tile_offsets[None, :, None] < seq_len \
-            #            #    & tile_n.index[:, None, None] < num_blocks
-            #            extra_mask=combined_mask
-            #            )
-            v_load = v_load.flatten(start_dim=0, end_dim=1)
-            # DEBUG: check the dimensions
-            v_load = v_load.view([block_n_size, head_size])
-            # TODO: for now, we assume always full pages
-            k_load = k_load.flatten(start_dim=0, end_dim=1)
-            # DEBUG: check the dimensions
-            k_load = k_load.view([block_n_size, head_size])
-            # (tile_n, HEAD_SIZE)
-            k = hl.zeros([block_n_size, head_size], dtype=k_load.dtype)
-            # k = hl.full([block_n_size, head_size],float("-inf"), dtype=k_load.dtype)
-            tile_token_offsets = hl.arange(block_n_size)
-            absolute_tile_token_offsets = tile_n.begin * block_n_size + tile_token_offsets
-            k = torch.where(absolute_tile_token_offsets[:, None] < seq_len, 
-                            k_load, k)
-            # (HEAD_SIZE, tile_n)
-            k = k.transpose(0, 1)
-            # (tile_n, HEAD_SIZE)
-            v = hl.zeros([block_n_size, head_size], dtype=v_load.dtype)
-            # v = hl.full([block_n_size, head_size],float("-inf"), dtype=v_load.dtype)
-            v = torch.where(absolute_tile_token_offsets[:, None] < seq_len, 
-                            v_load, v)
-            # (tile_m, tile_n)
-            # TODO: why zeros are needed as acc? only in Triton code? 
-            #   for future sliding window?
-            # S = hl.zeros([block_m_size, block_n_size], dtype=torch.float32)
-            # S = (hl.dot(q, k, out_dtype=torch.float32, acc=S) * scale)
-            S = hl.dot(q, k, out_dtype=torch.float32) * scale
-            # DEBUG: to check the shape...
-            # S = S.view([block_m_size, block_n_size])
-            # (tile_m)
-            M_j = torch.maximum(M, torch.amax(S, 1))
-            # (tile_m, tile_n)
-            P = torch.exp(S - M_j[:, None])
-            # (tile_m, )
-            L_j = torch.sum(P, 1)
-            # (tile_m, )
-            alpha = torch.exp(M - M_j)
-            # (tile_m, HEAD_SIZE)
-            acc = acc * alpha[:, None]
-            L = (L * alpha) + L_j
-            M = M_j
+                k_load = t_key_cache[blk_idxs, :, kv_head_idx, :]
+                # total_token_in_tile_offsets = tile_n.begin * page_size + hl.arange(page_size)
+                # # WRONG for tile_n > 1 
+                # token_mask = torch.where(
+                #     total_token_in_tile_offsets < seq_len, 1, 0).to(torch.bool)[None, :, None]
+                # # also WRONG for tile_n > 1 
+                # page_mask = torch.where(
+                #     tile_n.index < num_blocks, 1, 0).to(torch.bool)[:, None, None]
+                # # page mask NOT necessary, is correctly handled by code gen
+                # combined_mask = token_mask & page_mask
 
-            # (tile_m, HEAD_SIZE)
-            acc = hl.dot(P.to(v.dtype), v, out_dtype=torch.float32, acc=acc)
+                # # (tile_n, PAGE_SIZE, 1, HEAD_SIZE)
+                # k_load = hl.load(t_key_cache, 
+                #            [blk_idxs, hl.arange(page_size), kv_head_idx, hl.arange(head_size)],
+                #            # mask has only 3 dims, since kv_head_idx is size 1 dim and is removed 
+                #            # extra_mask=total_token_in_tile_offsets[None, :, None] < seq_len \
+                #            #    &  tile_n.index[:, None, None] < num_blocks
+                #            # need to do explicit mask, because & in here doesn't work due to broadcasting?
+                #            extra_mask=combined_mask
+                #            )
+                # DEBUG: to assert shape
+                k_load = k_load.view([tile_n, page_size, head_size])
+                # (tile_n, PAGE_SIZE, HEAD_SIZE)
+                v_load = t_value_cache[blk_idxs, :, kv_head_idx, :]
+                # v_load = hl.load(t_value_cache, 
+                #            [blk_idxs, hl.arange(page_size), kv_head_idx, hl.arange(head_size)],
+                #            # extra_mask=total_token_in_tile_offsets[None, :, None] < seq_len \
+                #            #    & tile_n.index[:, None, None] < num_blocks
+                #            extra_mask=combined_mask
+                #            )
+                v_load = v_load.flatten(start_dim=0, end_dim=1)
+                # DEBUG: check the dimensions
+                v_load = v_load.view([block_n_size, head_size])
+                # TODO: for now, we assume always full pages
+                k_load = k_load.flatten(start_dim=0, end_dim=1)
+                # DEBUG: check the dimensions
+                k_load = k_load.view([block_n_size, head_size])
+                # (tile_n, HEAD_SIZE)
+                k = hl.zeros([block_n_size, head_size], dtype=k_load.dtype)
+                # k = hl.full([block_n_size, head_size],float("-inf"), dtype=k_load.dtype)
+                tile_token_offsets = hl.arange(block_n_size)
+                absolute_tile_token_offsets = tile_n.begin * block_n_size + tile_token_offsets
+                k = torch.where(absolute_tile_token_offsets[:, None] < seq_len, 
+                                k_load, k)
+                # (HEAD_SIZE, tile_n)
+                k = k.transpose(0, 1)
+                # (tile_n, HEAD_SIZE)
+                v = hl.zeros([block_n_size, head_size], dtype=v_load.dtype)
+                # v = hl.full([block_n_size, head_size],float("-inf"), dtype=v_load.dtype)
+                v = torch.where(absolute_tile_token_offsets[:, None] < seq_len, 
+                                v_load, v)
+                # (tile_m, tile_n)
+                # TODO: why zeros are needed as acc? only in Triton code? 
+                #   for future sliding window?
+                # S = hl.zeros([block_m_size, block_n_size], dtype=torch.float32)
+                # S = (hl.dot(q, k, out_dtype=torch.float32, acc=S) * scale)
+                S = hl.dot(q, k, out_dtype=torch.float32) * scale
+                # DEBUG: to check the shape...
+                # S = S.view([block_m_size, block_n_size])
+                # (tile_m)
+                M_j = torch.maximum(M, torch.amax(S, 1))
+                # (tile_m, tile_n)
+                P = torch.exp(S - M_j[:, None])
+                # (tile_m, )
+                L_j = torch.sum(P, 1)
+                # (tile_m, )
+                alpha = torch.exp(M - M_j)
+                # (tile_m, HEAD_SIZE)
+                acc = acc * alpha[:, None]
+                L = (L * alpha) + L_j
+                M = M_j
 
-        # epilogue
-        acc = acc / L[:, None]
-        hl.store(t_output, 
-                 # [tile_q.index, tile_m.index, hl.arange(head_size)], 
-                 [adjusted_tile_q_index, tile_m.index, hl.arange(head_size)], 
-                 # acc.view([-1, tile_m.block_size, head_size]),
-                 acc.view([tile_q.block_size, tile_m.block_size, head_size]),
-                 # extra_mask=tile_q.index[:, None, None] < query_end
-                 # extra_mask=tile_q.index < query_len,
-                 extra_mask=adjusted_tile_q_index[:, None, None] < query_end
-                 )
+                # (tile_m, HEAD_SIZE)
+                acc = hl.dot(P.to(v.dtype), v, out_dtype=torch.float32, acc=acc)
+
+            # epilogue
+            acc = acc / L[:, None]
+            # hl.store(t_output, 
+            #          # [tile_q.index, tile_m.index, hl.arange(head_size)], 
+            #          [adjusted_tile_q_index, tile_m.index, hl.arange(head_size)], 
+            #          # acc.view([-1, tile_m.block_size, head_size]),
+            #          acc.view([tile_q.block_size, tile_m.block_size, head_size]),
+            #          # extra_mask=tile_q.index[:, None, None] < query_end
+            #          # extra_mask=tile_q.index < query_len,
+            #          extra_mask=adjusted_tile_q_index[:, None, None] < query_end
+            #          )
+            t_output[tile_q, tile_m, :] = acc.view([tile_q.block_size, tile_m.block_size, head_size])
 
 
 def helion_unified_attention(
