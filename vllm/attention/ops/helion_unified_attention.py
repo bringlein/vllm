@@ -53,7 +53,9 @@ def _triton_baseline_fn(
 # # dbg_config = helion.Config(block_sizes=[2, 4], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[32], load_eviction_policies=['last', 'last', 'last', 'first', 'first', 'last', 'first', '', 'last'], loop_orders=[[1, 2, 0]], num_stages=2, num_warps=4, pid_type='xyz', range_flattens=[None, False], range_multi_buffers=[None, True], range_num_stages=[0, 2], range_unroll_factors=[0, 1], range_warp_specializes=[])
 # dbg_config = helion.Config(block_sizes=[4, 2], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[32], load_eviction_policies=['last', 'first', 'last', 'first', 'first', 'last', 'first', '', 'last'], loop_orders=[[1, 2, 0]], num_stages=1, num_warps=4, pid_type='persistent_interleaved', range_flattens=[True, False], range_multi_buffers=[True, True], range_num_stages=[1, 2], range_unroll_factors=[0, 1], range_warp_specializes=[])
 # dbg_config = helion.Config(block_sizes=[1], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[64], load_eviction_policies=['last', 'last', 'first', 'last', 'first', '', '', '', 'last', 'last', ''], loop_orders=[[2, 1, 0]], num_stages=1, num_warps=1, pid_type='flat', range_flattens=[None, None], range_multi_buffers=[None, None], range_num_stages=[0, 2], range_unroll_factors=[0, 0], range_warp_specializes=[])
-dbg_config = helion.Config(block_sizes=[1, 1], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[32], load_eviction_policies=['last', 'last', 'last', 'first', 'first', 'last', 'first', '', 'last'], loop_orders=[[1, 2, 0]], num_stages=2, num_warps=4, pid_type='flat', range_flattens=[None, False], range_multi_buffers=[None, True], range_num_stages=[0, 2], range_unroll_factors=[0, 1], range_warp_specializes=[])
+#dbg_config = helion.Config(block_sizes=[1, 1], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[32], load_eviction_policies=['last', 'last', 'last', 'first', 'first', 'last', 'first', '', 'last'], loop_orders=[[1, 2, 0]], num_stages=2, num_warps=4, pid_type='flat', range_flattens=[None, False], range_multi_buffers=[None, True], range_num_stages=[0, 2], range_unroll_factors=[0, 1], range_warp_specializes=[])
+
+dbg_config = helion.Config(block_sizes=[8, 2], indexing=['tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer'], l2_groupings=[8], load_eviction_policies=['last', 'first', 'last', 'last', 'last', 'last', 'last'], loop_orders=[[1, 0, 2]], num_stages=5, num_warps=4, pid_type='persistent_interleaved', range_flattens=[True, None], range_multi_buffers=[True, False], range_num_stages=[1, 1], range_unroll_factors=[2, 1], range_warp_specializes=[])
 
 
 @helion.kernel(
@@ -62,7 +64,7 @@ dbg_config = helion.Config(block_sizes=[1, 1], indexing=['pointer', 'tensor_desc
     static_shapes=True,
     # dot_precision='ieee',
     # config=config,
-    # config=dbg_config,
+    config=dbg_config,
     # configs=nv_configs,
     autotune_baseline_fn=_triton_baseline_fn,
     # autotune_accuracy_check=False,  # since we can't adjust ATOL manually
@@ -100,13 +102,12 @@ def kernel_helion_v3_attention(
     assert head_size == t_key_cache.size(3)
 
     # q_block_size = hl.register_block_size(1, int(max_query_len))
-    # q_block_size = hl.register_block_size(1, 32)
-    q_block_size = hl.register_block_size(1, 1)
+    q_block_size = hl.register_block_size(1, 32)
+    # q_block_size = hl.register_block_size(1, 1)
     # q_block_size = 1
     # q_block_size = hl.register_block_size(1, int(max_used_query_len_padded))
     # num_pages_at_once = hl.register_block_size(1, 512//page_size)
-    # num_pages_at_once = hl.register_block_size(1, 32)
-    num_pages_at_once = hl.register_block_size(1, 1)
+    num_pages_at_once = hl.register_block_size(1, 32)
     # num_pages_at_once = hl.register_block_size(1, 1)
 
     for seq_tile, tile_m, tile_q in hl.tile(
@@ -268,7 +269,8 @@ def kernel_helion_v3_attention(
                  acc.view([q_block_size, num_queries_per_kv, head_size]),
                  # extra_mask=tile_q.index[:, None, None] < query_end
                  # extra_mask=tile_q.index < query_len,
-                 extra_mask=adjusted_tile_q_index[:, None, None] < query_end
+                 # extra_mask=adjusted_tile_q_index[:, None, None] < query_end
+                 extra_mask=q_load_mask,
                  )
 
 
