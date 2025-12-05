@@ -80,12 +80,12 @@ dbg_configs = [
 
 @helion.kernel(
     allow_warp_specialize=True,
-    # static_shapes=False,
-    static_shapes=True,
+    static_shapes=False,
+    # static_shapes=True,
     # dot_precision='ieee',
     # config=config,
-    config=dbg_config,
-    # configs=dbg_configs,
+    # config=dbg_config,
+    configs=dbg_configs,
     autotune_baseline_fn=_triton_baseline_fn,
     autotune_effort="quick",
     # autotune_ignore_errors=True,
@@ -192,16 +192,21 @@ def kernel_helion_v5_attention(
                 [block_m_size, head_size], dtype=torch.float32
             )
 
-            num_blocks = torch.ceil(seq_len / page_size)
+            # num_blocks = torch.ceil(seq_len / page_size)
             # adjust for causal mask
-            # max_seq_prefix_len = (
-            #     context_len
-            #     # + tile_q.end
-            #     + cur_qblock_end
-            #     + (tile_m.block_size + num_queries_per_kv - 1) // num_queries_per_kv
-            # )
-            # max_seq_prefix_len = torch.minimum(max_seq_prefix_len, seq_len)
-            # num_blocks = torch.ceil(max_seq_prefix_len / page_size)
+            max_seq_prefix_len = (
+                context_len
+                #  + tile_q.end
+                # + cur_qblock_end
+                # + (tile_m.block_size + num_queries_per_kv - 1) // num_queries_per_kv
+                # + num_queries_per_kv
+                + tile_q.begin
+                + block_m_size 
+                # + num_pages_at_once 
+                + 1
+            )
+            max_seq_prefix_len = torch.minimum(max_seq_prefix_len, seq_len)
+            num_blocks = torch.ceil(max_seq_prefix_len / page_size)
             for tile_n in hl.tile(num_blocks, block_size=num_pages_at_once):
                 block_n_size = num_pages_at_once * page_size
                 # TODO: bug: will not be right shape if tile_n is partial
