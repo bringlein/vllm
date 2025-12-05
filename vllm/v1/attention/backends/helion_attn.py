@@ -67,8 +67,9 @@ class HelionAttentionMetadata:
 
 class HelionAttentionMetadataBuilder(AttentionMetadataBuilder[HelionAttentionMetadata]):
     # TODO
-    cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.NEVER
-    reorder_batch_threshold: int = 1
+    # _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.NEVER
+    # reorder_batch_threshold: int = 1
+    _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.ALWAYS
 
     def __init__(
         self,
