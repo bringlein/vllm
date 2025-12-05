@@ -20,13 +20,12 @@ def _triton_baseline_fn(
     # k_scale,
     # v_scale,
     t_query_start_lens,  # [num_seqs+1]
-    max_query_len,
-    # max_used_query_len_padded,
+    # max_query_len,
     num_seqs,
     is_decode_only,
 ):
     max_seqlen = t_seq_lens.max()
-    # max_query_len = t_query_start_lens.diff().max()
+    max_query_len = t_query_start_lens.diff().max()
     return triton_baseline_unified_attention(
         q=t_query,
         k=t_key_cache,
@@ -50,10 +49,11 @@ def _triton_baseline_fn(
 
 dbg_config = helion.Config(block_sizes=[16, 1, 2], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['last', 'last', '', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, True, True], range_num_stages=[0, 4, 0], range_unroll_factors=[0, 3, 0], range_warp_specializes=[])
 dbg_configs = [
-    helion.Config(block_sizes=[32, 1, 2], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer'], l2_groupings=[64], load_eviction_policies=['', '', '', 'last', 'last', 'first', 'first'], loop_orders=[[0, 1]], num_stages=6, num_warps=8, pid_type='flat', range_flattens=[None, True, False], range_multi_buffers=[None, None, False], range_num_stages=[0, 0, 2], range_unroll_factors=[0, 4, 1], range_warp_specializes=[]),
+    # helion.Config(block_sizes=[32, 1, 2], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer'], l2_groupings=[64], load_eviction_policies=['', '', '', 'last', 'last', 'first', 'first'], loop_orders=[[0, 1]], num_stages=6, num_warps=8, pid_type='flat', range_flattens=[None, True, False], range_multi_buffers=[None, None, False], range_num_stages=[0, 0, 2], range_unroll_factors=[0, 4, 1], range_warp_specializes=[]),
     helion.Config(block_sizes=[16, 1, 2], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['last', 'last', '', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, True, True], range_num_stages=[0, 4, 0], range_unroll_factors=[0, 3, 0], range_warp_specializes=[]),
     helion.Config(block_sizes=[32, 1, 2], indexing=['pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor'], l2_groupings=[4], load_eviction_policies=['last', '', 'last', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=6, num_warps=8, pid_type='flat', range_flattens=[None, False, True], range_multi_buffers=[None, False, False], range_num_stages=[0, 4, 4], range_unroll_factors=[0, 0, 2], range_warp_specializes=[]),
     helion.Config(block_sizes=[16, 1, 1], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['last', 'last', '', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, True, True], range_num_stages=[0, 4, 0], range_unroll_factors=[0, 3, 0], range_warp_specializes=[]),
+    helion.Config(block_sizes=[4, 1, 2], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['last', 'last', '', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, True, True], range_num_stages=[0, 4, 0], range_unroll_factors=[0, 3, 0], range_warp_specializes=[]),
     helion.Config(block_sizes=[1, 1, 1], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['last', 'last', '', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, True, True], range_num_stages=[0, 4, 0], range_unroll_factors=[0, 3, 0], range_warp_specializes=[]),
 ]
 
@@ -85,9 +85,9 @@ def kernel_helion_v5_attention(
     # k_scale,
     # v_scale,
     t_query_start_lens,  # [num_seqs+1]
-    max_query_len,  # must be on cpu, right now used only for triton baseline
+    # max_query_len,  # must be on cpu
     num_seqs,  # must be on cpu
-    # to trigger re-compilation for decode only
+    # to trigger re-compilation (and re-tuning) for decode only
     is_decode_only: hl.constexpr,
 ):
     head_size = hl.specialize(t_query.size(2))
@@ -96,7 +96,7 @@ def kernel_helion_v5_attention(
     page_size = hl.specialize(t_value_cache.size(1))
     num_queries_per_kv = hl.specialize(num_query_heads // num_kv_heads)
     
-    t_output.fill_(42.2)
+    # t_output.fill_(42.2)
     assert page_size == t_key_cache.size(1)
     assert head_size == t_key_cache.size(3)
 
@@ -140,7 +140,7 @@ def kernel_helion_v5_attention(
             # (tile_m, HEAD_SIZE)
             q = q.flatten(start_dim=0, end_dim=1)
             # DEBUG: check the dimensions
-            q = q.view([block_m_size, head_size])
+            # q = q.view([block_m_size, head_size])
 
             M = hl.full(
                 [block_m_size], float("-inf"), dtype=torch.float32
@@ -162,17 +162,17 @@ def kernel_helion_v5_attention(
                     # [seq_idx, tile_n],  # also this doesn't work
                     [seq_idx, tile_n.begin + hl.arange(num_pages_at_once)],
                     # TODO necessary? 
-                    extra_mask=tile_n.begin + hl.arange(num_pages_at_once)[None, :] < num_blocks,
+                    # extra_mask=tile_n.begin + hl.arange(num_pages_at_once)[None, :] < num_blocks,
                 )
                 blk_idxs = blk_idxs.view([num_pages_at_once]).to(torch.int64)
 
                 # (tile_n, PAGE_SIZE, 1, HEAD_SIZE)
                 k_load = t_key_cache[blk_idxs, :, kv_head_idx, :]
                 # DEBUG: to assert shape
-                k_load = k_load.view([tile_n, page_size, head_size])
+                # k_load = k_load.view([tile_n, page_size, head_size])
                 k_load = k_load.flatten(start_dim=0, end_dim=1)
                 # DEBUG: check the dimensions
-                k_load = k_load.view([block_n_size, head_size])
+                # k_load = k_load.view([block_n_size, head_size])
                 # (tile_n, HEAD_SIZE)
                 k = hl.zeros([block_n_size, head_size], dtype=k_load.dtype)
                 absolute_tile_token_offsets = tile_n.begin * page_size + hl.arange(block_n_size)
@@ -185,7 +185,7 @@ def kernel_helion_v5_attention(
                 v_load = t_value_cache[blk_idxs, :, kv_head_idx, :]
                 v_load = v_load.flatten(start_dim=0, end_dim=1)
                 # DEBUG: check the dimensions
-                v_load = v_load.view([block_n_size, head_size])
+                # v_load = v_load.view([block_n_size, head_size])
                 # (tile_n, HEAD_SIZE)
                 v = hl.zeros([block_n_size, head_size], dtype=v_load.dtype)
                 # v = hl.full([block_n_size, head_size],float("-inf"), dtype=v_load.dtype)
@@ -193,19 +193,19 @@ def kernel_helion_v5_attention(
                                 v_load, v)
                 
                 # (tile_m, tile_n)
-                # TODO: why zeros are needed as acc? only in Triton code? 
-                #   for future sliding window?
+                # TODO: use S with float32 as acc to enforce higher precision
+                #  for the additions of the dot operation?
                 S = hl.zeros([block_m_size, block_n_size], dtype=torch.float32)
                 S = (hl.dot(q, k, out_dtype=torch.float32, acc=S) * scale)
                 # S = hl.dot(q, k, out_dtype=torch.float32) * scale
                 # DEBUG: to check the shape...
-                S = S.view([block_m_size, block_n_size])
+                # S = S.view([block_m_size, block_n_size])
                 # all query heads for one query token are valid
                 # TODO: bug: despite knowing the q_block_size at compile time, it is not marked as such?
                 # block_m_query_mask = tile_q.index.repeat_interleave(num_queries_per_kv, dim=0)
                 block_m_query_mask = tile_q.begin + hl.arange(q_block_size).repeat_interleave(num_queries_per_kv, dim=0)
                 # DEBUG: to check the shape...
-                block_m_query_mask = block_m_query_mask.view([block_m_size])
+                # block_m_query_mask = block_m_query_mask.view([block_m_size])
                 # construct 2d causal mask
                 causal_mask = absolute_tile_token_offsets[None, :] < context_len + block_m_query_mask[:, None] + 1
                 S = torch.where(causal_mask, S, float("-inf"))
@@ -288,7 +288,7 @@ def helion_unified_attention(
         # k_scale=k_descale,
         # v_scale=v_descale,
         t_query_start_lens=cu_seqlens_q,
-        max_query_len=max_seqlen_q,  # need not to be a tensor
+        # max_query_len=max_seqlen_q,  # need not to be a tensor
         num_seqs=num_seqs,
         is_decode_only = max_seqlen_q == 1
     )
