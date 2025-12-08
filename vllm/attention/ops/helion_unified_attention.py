@@ -7,6 +7,8 @@ import torch
 from .triton_unified_attention import (
     unified_attention as triton_baseline_unified_attention,
 )
+from triton import next_power_of_2
+
 
 
 def _triton_baseline_fn(
@@ -22,7 +24,8 @@ def _triton_baseline_fn(
     t_query_start_lens,  # [num_seqs+1]
     # max_query_len,
     num_seqs,
-    is_decode_only,
+    # is_decode_only,
+    q_block_padded_size,
 ):
     max_seqlen = t_seq_lens.max()
     max_query_len = t_query_start_lens.diff().max()
@@ -65,9 +68,10 @@ dbg_configs = [
     # dot_precision='ieee',
     # config=config,
     # config=dbg_config,
-    configs=dbg_configs,
+    # configs=dbg_configs,
     autotune_baseline_fn=_triton_baseline_fn,
     autotune_effort="quick",
+    # autotune_effort="full",
     # autotune_ignore_errors=True,
     print_output_code=False,
     print_repro=False,
@@ -88,7 +92,8 @@ def kernel_helion_v5_attention(
     # max_query_len,  # must be on cpu
     num_seqs,  # must be on cpu
     # to trigger re-compilation (and re-tuning) for decode only
-    is_decode_only: hl.constexpr,
+    # is_decode_only: hl.constexpr,
+    q_block_padded_size: hl.constexpr,
 ):
     head_size = hl.specialize(t_query.size(2))
     num_kv_heads = hl.specialize(t_key_cache.size(2))
@@ -105,7 +110,9 @@ def kernel_helion_v5_attention(
     # TODO: bug: leads to invaid python code
     # if is_decode_only:
     #     q_block_size = hl.register_block_size(1, 1)
-    q_block_size = hl.register_block_size(1, 32) if not is_decode_only else hl.register_block_size(1, 1)
+    # TODO: bug, doesn't have any effect in code gen, block size is always 1
+    # q_block_size = hl.register_block_size(1, 32) if not is_decode_only else hl.register_block_size(1, 1)
+    q_block_size = hl.register_block_size(1, q_block_padded_size)
     # num_pages_at_once = hl.register_block_size(1, 512//page_size)
     num_pages_at_once = hl.register_block_size(1, 32)
 
@@ -277,6 +284,10 @@ def helion_unified_attention(
     # print(f"block_table shape: {block_table.shape}, query shape: {q.shape}")
     # print(f"k stride: {k.stride()}, k shape: {k.shape}")
 
+    max_used_querylen_padded = 1 if max_seqlen_q == 1 else \
+        next_power_of_2(max(64, max_seqlen_q))
+    
+
     kernel_helion_v5_attention(
         t_output=out,
         t_query=q,
@@ -290,5 +301,6 @@ def helion_unified_attention(
         t_query_start_lens=cu_seqlens_q,
         # max_query_len=max_seqlen_q,  # need not to be a tensor
         num_seqs=num_seqs,
-        is_decode_only = max_seqlen_q == 1
+        # is_decode_only = max_seqlen_q == 1
+        q_block_padded_size=max_used_querylen_padded,
     )
