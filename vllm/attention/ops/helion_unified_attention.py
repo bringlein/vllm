@@ -48,33 +48,42 @@ def _triton_baseline_fn(
         v_descale=None,
     )
 
-# config = nv_config if torch.version.cuda else amd_config
 
-dbg_config = helion.Config(block_sizes=[16, 1, 2], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['last', 'last', '', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, True, True], range_num_stages=[0, 4, 0], range_unroll_factors=[0, 3, 0], range_warp_specializes=[])
-dbg_configs = [
-    # helion.Config(block_sizes=[32, 1, 2], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer'], l2_groupings=[64], load_eviction_policies=['', '', '', 'last', 'last', 'first', 'first'], loop_orders=[[0, 1]], num_stages=6, num_warps=8, pid_type='flat', range_flattens=[None, True, False], range_multi_buffers=[None, None, False], range_num_stages=[0, 0, 2], range_unroll_factors=[0, 4, 1], range_warp_specializes=[]),
-    helion.Config(block_sizes=[16, 1, 2], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['last', 'last', '', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, True, True], range_num_stages=[0, 4, 0], range_unroll_factors=[0, 3, 0], range_warp_specializes=[]),
-    helion.Config(block_sizes=[32, 1, 2], indexing=['pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor'], l2_groupings=[4], load_eviction_policies=['last', '', 'last', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=6, num_warps=8, pid_type='flat', range_flattens=[None, False, True], range_multi_buffers=[None, False, False], range_num_stages=[0, 4, 4], range_unroll_factors=[0, 0, 2], range_warp_specializes=[]),
-    helion.Config(block_sizes=[16, 1, 1], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['last', 'last', '', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, True, True], range_num_stages=[0, 4, 0], range_unroll_factors=[0, 3, 0], range_warp_specializes=[]),
-    helion.Config(block_sizes=[4, 1, 2], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['last', 'last', '', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, True, True], range_num_stages=[0, 4, 0], range_unroll_factors=[0, 3, 0], range_warp_specializes=[]),
-    helion.Config(block_sizes=[1, 1, 1], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['last', 'last', '', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, True, True], range_num_stages=[0, 4, 0], range_unroll_factors=[0, 3, 0], range_warp_specializes=[]),
+dbg_config = helion.Config(block_sizes=[32, 2], indexing=['pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[4], load_eviction_policies=['', 'last', 'first', 'first', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=7, num_warps=8, pid_type='flat', range_flattens=[None, False, None], range_multi_buffers=[None, True, False], range_num_stages=[0, 2, 1], range_unroll_factors=[0, 1, 1], range_warp_specializes=[]) 
+nv_configs = [
+    helion.Config(block_sizes=[32, 2], indexing=['pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[4], load_eviction_policies=['first', 'last', 'first', 'first', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=7, num_warps=8, pid_type='flat', range_flattens=[None, False, None], range_multi_buffers=[None, True, False], range_num_stages=[0, 2, 1], range_unroll_factors=[0, 2, 1], range_warp_specializes=[]),
+    helion.Config(block_sizes=[64, 4], indexing=['pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor'], l2_groupings=[16], load_eviction_policies=['', 'last', 'first', 'last', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=7, num_warps=8, pid_type='flat', range_flattens=[None, None, False], range_multi_buffers=[None, False, None], range_num_stages=[0, 3, 1], range_unroll_factors=[0, 3, 0], range_warp_specializes=[]),
+    helion.Config(block_sizes=[32, 4], indexing=['pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[4], load_eviction_policies=['', 'last', 'first', 'first', 'last', 'last', 'last'], loop_orders=[[1, 0]], num_stages=7, num_warps=8, pid_type='persistent_interleaved', range_flattens=[False, False, None], range_multi_buffers=[False, True, False], range_num_stages=[1, 2, 1], range_unroll_factors=[2, 1, 1], range_warp_specializes=[]),
+    helion.Config(block_sizes=[32, 8], indexing=['pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[4], load_eviction_policies=['', 'last', 'first', 'first', '', 'last', ''], loop_orders=[[0, 1]], num_stages=7, num_warps=8, pid_type='flat', range_flattens=[None, False, None], range_multi_buffers=[None, True, False], range_num_stages=[0, 2, 1], range_unroll_factors=[0, 2, 1], range_warp_specializes=[]),
+    helion.Config(block_sizes=[32, 16], indexing=['pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[4], load_eviction_policies=['', 'last', 'first', 'first', '', 'last', 'last'], loop_orders=[[1, 0]], num_stages=7, num_warps=8, pid_type='flat', range_flattens=[None, False, None], range_multi_buffers=[None, True, False], range_num_stages=[0, 2, 1], range_unroll_factors=[0, 1, 1], range_warp_specializes=[]),
+    helion.Config(block_sizes=[1, 2], indexing=['pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor'], l2_groupings=[16], load_eviction_policies=['', 'last', 'first', 'last', 'last', 'last', 'last'], loop_orders=[[1, 0]], num_stages=8, num_warps=8, pid_type='flat', range_flattens=[None, None, False], range_multi_buffers=[None, False, None], range_num_stages=[0, 3, 1], range_unroll_factors=[0, 3, 0], range_warp_specializes=[]),
 ]
+amd_configs = [
+    helion.Config(block_sizes=[32, 2], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer'], l2_groupings=[4], load_eviction_policies=['first', 'last', 'first', '', '', '', 'last'], loop_orders=[[0, 1]], matrix_instr_nonkdim=0, num_stages=5, num_warps=2, pid_type='persistent_blocked', range_flattens=[None, True, True], range_multi_buffers=[True, None, False], range_num_stages=[1, 0, 0], range_unroll_factors=[1, 1, 0], range_warp_specializes=[], waves_per_eu=1),
+    helion.Config(block_sizes=[32, 1], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'pointer'], l2_groupings=[4], load_eviction_policies=['first', 'last', 'first', '', '', '', 'last'], loop_orders=[[0, 1]], matrix_instr_nonkdim=0, num_stages=5, num_warps=2, pid_type='persistent_blocked', range_flattens=[None, True, True], range_multi_buffers=[True, None, None], range_num_stages=[1, 0, 0], range_unroll_factors=[1, 1, 0], range_warp_specializes=[], waves_per_eu=1),
+    helion.Config(block_sizes=[64, 1], indexing=['pointer', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'pointer', 'tensor_descriptor', 'tensor_descriptor'], l2_groupings=[1], load_eviction_policies=['last', 'first', 'first', 'last', 'first', '', 'last'], loop_orders=[[1, 0]], matrix_instr_nonkdim=0, num_stages=8, num_warps=16, pid_type='flat', range_flattens=[None, None, True], range_multi_buffers=[None, None, False], range_num_stages=[0, 0, 2], range_unroll_factors=[0, 1, 0], range_warp_specializes=[], waves_per_eu=1),
+    helion.Config(block_sizes=[64, 2], indexing=['tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[16], load_eviction_policies=['last', '', 'last', '', 'first', 'last', ''], loop_orders=[[0, 1]], matrix_instr_nonkdim=0, num_stages=8, num_warps=8, pid_type='persistent_blocked', range_flattens=[None, True, None], range_multi_buffers=[True, None, None], range_num_stages=[1, 2, 1], range_unroll_factors=[3, 2, 2], range_warp_specializes=[], waves_per_eu=1),
+    helion.Config(block_sizes=[64, 2], indexing=['pointer', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'tensor_descriptor'], l2_groupings=[32], load_eviction_policies=['first', '', 'first', 'first', '', 'last', ''], loop_orders=[[0, 1]], matrix_instr_nonkdim=0, num_stages=2, num_warps=8, pid_type='flat', range_flattens=[None, None, True], range_multi_buffers=[None, False, None], range_num_stages=[0, 4, 1], range_unroll_factors=[0, 2, 3], range_warp_specializes=[], waves_per_eu=1),
+    helion.Config(block_sizes=[1, 8], indexing=['tensor_descriptor', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[8], load_eviction_policies=['last', '', 'first', 'last', 'last', 'last', 'last'], loop_orders=[[1, 0]], matrix_instr_nonkdim=0, num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, True, False], range_multi_buffers=[None, None, False], range_num_stages=[0, 2, 1], range_unroll_factors=[0, 3, 2], range_warp_specializes=[], waves_per_eu=1),
+    helion.Config(block_sizes=[1, 2], indexing=['pointer', 'tensor_descriptor', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'tensor_descriptor'], l2_groupings=[8], load_eviction_policies=['', '', 'first', 'last', 'last', 'last', 'last'], loop_orders=[[1, 0]], matrix_instr_nonkdim=0, num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, True, False], range_multi_buffers=[None, True, False], range_num_stages=[0, 2, 1], range_unroll_factors=[0, 3, 2], range_warp_specializes=[], waves_per_eu=1),
+]
+
+configs = nv_configs if torch.version.cuda else amd_configs
 
 
 @helion.kernel(
     allow_warp_specialize=True,
     static_shapes=False,
-    # static_shapes=True,
-    # dot_precision='ieee',
-    # config=config,
     # config=dbg_config,
-    # configs=dbg_configs,
+    configs=configs,
     autotune_baseline_fn=_triton_baseline_fn,
     autotune_effort="quick",
-    # autotune_effort="full",
-    # autotune_ignore_errors=True,
-    print_output_code=False,
+    # for in-place autotuning, not recommended for micro-benchmarks
+    autotune_accuracy_check=False,
+    autotune_ignore_errors=True,
     print_repro=False,
+    # for debugging
+    print_output_code=True,
     # debug_dtype_asserts=True,
     index_dtype=torch.int64,
 )
