@@ -82,8 +82,9 @@ configs = nv_configs if torch.version.cuda else amd_configs
     autotune_accuracy_check=False,
     autotune_ignore_errors=True,
     print_repro=False,
+    print_output_code=False,
     # for debugging
-    print_output_code=True,
+    # print_output_code=False,
     # debug_dtype_asserts=True,
     index_dtype=torch.int64,
 )
