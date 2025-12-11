@@ -49,7 +49,8 @@ def _triton_baseline_fn(
 
 
 dbg_config = helion.Config(
-    block_sizes=[32, 2],
+    # block_sizes=[32, 2],
+    block_sizes=[1, 1],
     indexing=[
         "pointer",
         "pointer",
@@ -66,11 +67,11 @@ dbg_config = helion.Config(
     num_stages=7,
     num_warps=8,
     pid_type="flat",
-    range_flattens=[None, False, None],
-    range_multi_buffers=[None, True, False],
-    range_num_stages=[0, 2, 1],
-    range_unroll_factors=[0, 1, 1],
-    range_warp_specializes=[],
+    # range_flattens=[None, False, None],
+    # range_multi_buffers=[None, True, False],
+    # range_num_stages=[0, 2, 1],
+    # range_unroll_factors=[0, 1, 1],
+    # range_warp_specializes=[],
 )
 nv_configs = [
     helion.Config(
@@ -410,12 +411,13 @@ configs = nv_configs if torch.version.cuda else amd_configs
     allow_warp_specialize=True,
     static_shapes=False,
     # config=dbg_config,
-    configs=configs,
+    # configs=configs,
     autotune_baseline_fn=_triton_baseline_fn,
     autotune_effort="quick",
     # for in-place autotuning, not recommended for micro-benchmarks
-    autotune_accuracy_check=False,
-    autotune_ignore_errors=True,
+    # autotune_accuracy_check=False,
+    autotune_baseline_atol=0.03, 
+    # autotune_ignore_errors=True,
     print_repro=False,
     print_output_code=False,
     # for debugging
@@ -579,12 +581,15 @@ def kernel_helion_v5_attention(
 
             # epilogue
             acc = acc / L[:, None]
-            hl.store(
-                t_output,
-                [adjusted_tile_q_index, tile_m.index, hl.arange(head_size)],
-                acc.view([q_block_size, num_queries_per_kv, head_size]),
-                extra_mask=q_load_mask,
+            t_output[adjusted_tile_q_index, tile_m, :] = acc.view(
+                [q_block_size, num_queries_per_kv, head_size]
             )
+            # hl.store(
+            #     t_output,
+            #     [adjusted_tile_q_index, tile_m.index, hl.arange(head_size)],
+            #     acc.view([q_block_size, num_queries_per_kv, head_size]),
+            #     extra_mask=q_load_mask,
+            # )
 
 
 def helion_unified_attention(
