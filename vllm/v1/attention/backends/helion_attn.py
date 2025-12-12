@@ -33,6 +33,10 @@ from vllm.v1.kv_cache_interface import AttentionSpec
 
 logger = init_logger(__name__)
 
+import os
+use_opt_launchgrid = os.getenv('NGL_EXP_USE_OPTLG', '0') == '1'
+from vllm.attention.ops.helion_unified_attention_opt import helion_unified_attention as opt_lg_helion_unified_attention
+
 
 @dataclass
 class HelionAttentionMetadata:
@@ -392,30 +396,57 @@ class HelionAttentionImpl(AttentionImpl):
         #     )
         # else:
 
-        helion_unified_attention(
-            q=query[:num_actual_tokens],
-            k=key_cache,
-            v=value_cache,
-            out=output[:num_actual_tokens],
-            cu_seqlens_q=cu_seqlens_q,
-            max_seqlen_q=max_seqlen_q,
-            seqused_k=seqused_k,
-            max_seqlen_k=max_seqlen_k,
-            softmax_scale=self.scale,
-            causal=True,
-            alibi_slopes=self.alibi_slopes,
-            window_size=self.sliding_window,
-            block_table=block_table,
-            # max_query_len_int=attn_metadata.max_query_len,
-            num_seqs=attn_metadata.num_reqs,
-            softcap=self.logits_soft_cap,
-            q_descale=None,  # Not supported
-            k_descale=None,
-            v_descale=None,
-            # k_descale=layer._k_scale.expand(descale_shape),
-            # v_descale=layer._v_scale.expand(descale_shape),
-            # sinks=self.sinks,
-            # output_scale=output_scale,
-        )
+        if use_opt_launchgrid:
+            opt_lg_helion_unified_attention(
+                q=query[:num_actual_tokens],
+                k=key_cache,
+                v=value_cache,
+                out=output[:num_actual_tokens],
+                cu_seqlens_q=cu_seqlens_q,
+                max_seqlen_q=max_seqlen_q,
+                seqused_k=seqused_k,
+                max_seqlen_k=max_seqlen_k,
+                softmax_scale=self.scale,
+                causal=True,
+                alibi_slopes=self.alibi_slopes,
+                window_size=self.sliding_window,
+                block_table=block_table,
+                # max_query_len_int=attn_metadata.max_query_len,
+                num_seqs=attn_metadata.num_reqs,
+                softcap=self.logits_soft_cap,
+                q_descale=None,  # Not supported
+                k_descale=None,
+                v_descale=None,
+                # k_descale=layer._k_scale.expand(descale_shape),
+                # v_descale=layer._v_scale.expand(descale_shape),
+                # sinks=self.sinks,
+                # output_scale=output_scale,
+            )
+        else:
+            helion_unified_attention(
+                q=query[:num_actual_tokens],
+                k=key_cache,
+                v=value_cache,
+                out=output[:num_actual_tokens],
+                cu_seqlens_q=cu_seqlens_q,
+                max_seqlen_q=max_seqlen_q,
+                seqused_k=seqused_k,
+                max_seqlen_k=max_seqlen_k,
+                softmax_scale=self.scale,
+                causal=True,
+                alibi_slopes=self.alibi_slopes,
+                window_size=self.sliding_window,
+                block_table=block_table,
+                # max_query_len_int=attn_metadata.max_query_len,
+                num_seqs=attn_metadata.num_reqs,
+                softcap=self.logits_soft_cap,
+                q_descale=None,  # Not supported
+                k_descale=None,
+                v_descale=None,
+                # k_descale=layer._k_scale.expand(descale_shape),
+                # v_descale=layer._v_scale.expand(descale_shape),
+                # sinks=self.sinks,
+                # output_scale=output_scale,
+            )
 
         return output
