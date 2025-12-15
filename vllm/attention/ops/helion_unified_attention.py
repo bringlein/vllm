@@ -136,14 +136,9 @@ configs = nv_configs if torch.version.cuda else amd_configs
     configs=configs,
     autotune_baseline_fn=_triton_baseline_fn,
     autotune_effort="quick",
-    # for in-place autotuning, not recommended for micro-benchmarks
-    # autotune_accuracy_check=False,
-    autotune_accuracy_check=True,
-    # yes, the atol high but we know that individual errors in this
-    #  magnituded can happen in Triton. Hence, for live-autotuning
-    #  we need to ensure it is not failing due to them.
-    #  It is not recommended to set this so high during actual autotuning
-    autotune_baseline_atol=0.03,
+    # for in-place autotuning, not recommended for micro-benchmarks or actual
+    #  config selection
+    autotune_accuracy_check=False,
     autotune_ignore_errors=True,
     print_repro=False,
     print_output_code=False,
