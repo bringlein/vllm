@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import helion
 import helion.language as hl
+from helion.autotuner.config_fragment import BooleanFragment
 import torch
 
 from vllm.triton_utils import next_power_of_2
@@ -22,11 +23,12 @@ def _triton_baseline_fn(
     # k_scale,
     # v_scale,
     t_query_start_lens,  # [num_seqs+1]
+    max_query_len,
     num_seqs,
     q_block_padded_size,
 ):
     max_seqlen = t_seq_lens.max()
-    max_query_len = t_query_start_lens.diff().max()
+    # max_query_len = t_query_start_lens.diff().max()
     return triton_baseline_unified_attention(
         q=t_query,
         k=t_key_cache,
@@ -385,7 +387,7 @@ configs = nv_configs if torch.version.cuda else amd_configs
     allow_warp_specialize=True,
     static_shapes=False,
     index_dtype=torch.int64,
-    configs=configs,
+    # configs=configs,
     autotune_baseline_fn=_triton_baseline_fn,
     autotune_effort="quick",
     # for in-place autotuning, not recommended for micro-benchmarks
@@ -397,7 +399,7 @@ configs = nv_configs if torch.version.cuda else amd_configs
     # useful for debugging
     # debug_dtype_asserts=True,
 )
-def kernel_helion_v5_attention(
+def kernel_helion_v7_attention(
     t_output,  # [num_tokens, num_query_heads, head_size]
     t_query,  # [num_tokens, num_query_heads, head_size]
     t_key_cache,  # [num_blks, blk_size, num_kv_heads, head_size]
@@ -408,6 +410,7 @@ def kernel_helion_v5_attention(
     # k_scale,
     # v_scale,
     t_query_start_lens,  # [num_seqs+1]
+    max_query_len, # must be on CPU
     num_seqs,  # must be on cpu
     # to trigger re-compilation (and re-tuning) for decodes only
     q_block_padded_size: hl.constexpr,
@@ -423,19 +426,28 @@ def kernel_helion_v5_attention(
 
     q_block_size = hl.register_block_size(1, q_block_padded_size)
     num_pages_at_once = hl.register_block_size(1, 32)
+    
+    use_3d_launchgrid = hl.register_tunable("use_3d_launchgrid", BooleanFragment())
+    q_outer_block_size = hl.register_block_size(int(q_block_size if use_3d_launchgrid else 1))
+    max_query_len_outer = max_query_len if use_3d_launchgrid else 1
+    q_inner_block_size = hl.register_block_size(int(q_block_size if not use_3d_launchgrid else 1))
+    max_query_len_inner = max_query_len if not use_3d_launchgrid else 1
 
-    for seq_tile, tile_m in hl.tile(
-        [num_seqs, num_query_heads],
-        block_size=[1, num_queries_per_kv],
+
+    for seq_tile, tile_m, tile_q_o in hl.tile(
+        [num_seqs, num_query_heads, max_query_len_outer],
+        block_size=[1, num_queries_per_kv, q_outer_block_size],
     ):
-        seq_idx = seq_tile.begin  # is scalar
-        seq_len = t_seq_lens[seq_idx]
-        query_start = t_query_start_lens[seq_idx]
-        query_end = t_query_start_lens[seq_idx + 1]
-        query_len = query_end - query_start
-        context_len = seq_len - query_len
+        for tile_q_i in hl.tile(max_query_len_inner, block_size=q_inner_block_size):
+            tile_q = tile_q_o if use_3d_launchgrid else tile_q_i
+        
+            seq_idx = seq_tile.begin  # is scalar
+            seq_len = t_seq_lens[seq_idx]
+            query_start = t_query_start_lens[seq_idx]
+            query_end = t_query_start_lens[seq_idx + 1]
+            query_len = query_end - query_start
+            context_len = seq_len - query_len
 
-        for tile_q in hl.tile(query_len, block_size=q_block_size):
             block_m_size = num_queries_per_kv * q_block_size
             kv_head_idx = tile_m.begin // num_queries_per_kv
 
@@ -462,7 +474,7 @@ def kernel_helion_v5_attention(
             num_blocks = torch.ceil(max_seq_prefix_len / page_size)
             for tile_n in hl.tile(num_blocks, block_size=num_pages_at_once):
                 block_n_size = num_pages_at_once * page_size
-                # explicit load due to wrong if tile_n is partial
+                # explicit load due to wrong range if tile_n is partial
                 blk_idxs = hl.load(
                     t_block_tables,
                     [seq_idx, tile_n.begin + hl.arange(num_pages_at_once)],
@@ -571,7 +583,7 @@ def helion_unified_attention(
         1 if max_seqlen_q == 1 else next_power_of_2(max(64, max_seqlen_q))
     )
 
-    kernel_helion_v5_attention(
+    kernel_helion_v7_attention(
         t_output=out,
         t_query=q,
         t_key_cache=k,
@@ -582,6 +594,7 @@ def helion_unified_attention(
         # k_scale=k_descale,
         # v_scale=v_descale,
         t_query_start_lens=cu_seqlens_q,
+        max_query_len=max_seqlen_q,  # need not to be a tensor
         num_seqs=num_seqs,
         q_block_padded_size=max_used_querylen_padded,
     )
