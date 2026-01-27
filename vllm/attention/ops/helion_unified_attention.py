@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import helion
 import helion.language as hl
-from helion.autotuner.config_fragment import BooleanFragment
+from helion.autotuner.config_fragment import BooleanFragment, BaseIntegerFragment
 import torch
 
 from vllm.triton_utils import next_power_of_2
@@ -424,29 +424,41 @@ def kernel_helion_v7_attention(
     assert page_size == t_key_cache.size(1)
     assert head_size == t_key_cache.size(3)
 
-    q_block_size = hl.register_block_size(1, q_block_padded_size)
+    # q_block_size = hl.register_block_size(1, q_block_padded_size)
     num_pages_at_once = hl.register_block_size(1, 32)
     
-    use_3d_launchgrid = hl.register_tunable("use_3d_launchgrid", BooleanFragment())
-    q_outer_block_size = hl.register_block_size(int(q_block_size if use_3d_launchgrid else 1))
-    max_query_len_outer = max_query_len if use_3d_launchgrid else 1
-    q_inner_block_size = hl.register_block_size(int(q_block_size if not use_3d_launchgrid else 1))
-    max_query_len_inner = max_query_len if not use_3d_launchgrid else 1
+    # use_3d_launchgrid = bool(hl.register_tunable("use_3d_launchgrid", BooleanFragment()))
+    # use_3d_launchgrid = hl.specialize(hl.register_tunable("use_3d_launchgrid", BooleanFragment()))
+    # q_outer_block_size = hl.register_block_size(int(q_block_size if use_3d_launchgrid else 1))
+    q_outer_block_size = hl.register_block_size(1, q_block_padded_size)
+    # max_query_len_outer = max_query_len if use_3d_launchgrid else 1
+    # max_query_len_outer = hl.register_tunable("max_query_len_outer", BaseIntegerFragment(1, max_query_len, 1))
+    # q_inner_block_size = hl.register_block_size(int(q_block_size if not use_3d_launchgrid else 1))
+    q_inner_block_size = hl.register_block_size(1, q_block_padded_size)
+    # max_query_len_inner = max_query_len if not use_3d_launchgrid else 1
 
 
     for seq_tile, tile_m, tile_q_o in hl.tile(
-        [num_seqs, num_query_heads, max_query_len_outer],
+        [num_seqs, num_query_heads, max_query_len],
         block_size=[1, num_queries_per_kv, q_outer_block_size],
     ):
-        for tile_q_i in hl.tile(max_query_len_inner, block_size=q_inner_block_size):
-            tile_q = tile_q_o if use_3d_launchgrid else tile_q_i
-        
-            seq_idx = seq_tile.begin  # is scalar
-            seq_len = t_seq_lens[seq_idx]
-            query_start = t_query_start_lens[seq_idx]
-            query_end = t_query_start_lens[seq_idx + 1]
-            query_len = query_end - query_start
-            context_len = seq_len - query_len
+        seq_idx = seq_tile.begin  # is scalar
+        seq_len = t_seq_lens[seq_idx]
+        query_start = t_query_start_lens[seq_idx]
+        query_end = t_query_start_lens[seq_idx + 1]
+        query_len = query_end - query_start
+        context_len = seq_len - query_len
+
+        # max_query_len_inner = torch.maximum(1, query_len - max_query_len_outer)
+        # for tile_q_i in hl.tile(max_query_len_inner, block_size=q_inner_block_size):
+        # q_inner_block_size = hl.ceil(q_inner_block_size_raw/q_outer_block_size)
+        # q_inner_block_size = torch.maximum(q_inner_block_size_raw, q_outer_block_size)
+        for tile_q in hl.tile(tile_q_o.begin, tile_q_o.end, block_size=q_inner_block_size):
+            # tile_q = tile_q_o if use_3d_launchgrid else tile_q_i
+            # q_block_size = q_outer_block_size if use_3d_launchgrid else q_inner_block_size
+            # adjusted_tile_q_index = query_start + tile_q_o.begin + hl.arange(q_outer_block_size) \
+            #     + tile_q_i.begin * q_outer_block_size + hl.arange(q_inner_block_size)
+            q_block_size = q_inner_block_size
 
             block_m_size = num_queries_per_kv * q_block_size
             kv_head_idx = tile_m.begin // num_queries_per_kv
