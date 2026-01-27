@@ -26,6 +26,7 @@ def _triton_baseline_fn(
     max_query_len,
     num_seqs,
     q_block_padded_size,
+    batch_size_padded,
 ):
     max_seqlen = t_seq_lens.max()
     # max_query_len = t_query_start_lens.diff().max()
@@ -414,6 +415,7 @@ def kernel_helion_v7_attention(
     num_seqs,  # must be on cpu
     # to trigger re-compilation (and re-tuning) for decodes only
     q_block_padded_size: hl.constexpr,
+    batch_size_padded: hl.constexpr,
 ):
     head_size = hl.specialize(t_query.size(2))
     num_kv_heads = hl.specialize(t_key_cache.size(2))
@@ -425,19 +427,18 @@ def kernel_helion_v7_attention(
     assert head_size == t_key_cache.size(3)
 
     # q_block_size = hl.register_block_size(1, q_block_padded_size)
-    num_pages_at_once = hl.register_block_size(1, 32)
-    
     # use_3d_launchgrid = bool(hl.register_tunable("use_3d_launchgrid", BooleanFragment()))
     # use_3d_launchgrid = hl.specialize(hl.register_tunable("use_3d_launchgrid", BooleanFragment()))
     # q_outer_block_size = hl.register_block_size(int(q_block_size if use_3d_launchgrid else 1))
-    # q_outer_block_size = hl.register_block_size(1, q_block_padded_size)
-    q_outer_block_size = hl.register_block_size(1, 1 if q_block_padded_size == 1 else q_block_padded_size*4)
+    q_outer_block_size = hl.register_block_size(1, q_block_padded_size)
+    # q_outer_block_size = hl.register_block_size(1, 1 if q_block_padded_size == 1 else q_block_padded_size*4)
     # max_query_len_outer = max_query_len if use_3d_launchgrid else 1
     # max_query_len_outer = hl.register_tunable("max_query_len_outer", BaseIntegerFragment(1, max_query_len, 1))
     # q_inner_block_size = hl.register_block_size(int(q_block_size if not use_3d_launchgrid else 1))
-    q_inner_block_size = hl.register_block_size(1, q_block_padded_size)
+    q_inner_block_size = hl.register_block_size(1, min(q_block_padded_size, 64))
     # max_query_len_inner = max_query_len if not use_3d_launchgrid else 1
 
+    num_pages_at_once = hl.register_block_size(1, 32)
 
     for seq_tile, tile_m, tile_q_o in hl.tile(
         [num_seqs, num_query_heads, max_query_len],
@@ -595,9 +596,11 @@ def helion_unified_attention(
         "Block size must be at least 32 for fp8"
     )
 
-    max_used_querylen_padded = (
-        1 if max_seqlen_q == 1 else next_power_of_2(max(64, max_seqlen_q))
-    )
+    # max_used_querylen_padded = (
+    #     1 if max_seqlen_q == 1 else next_power_of_2(max(64, max_seqlen_q))
+    # )
+    max_used_querylen_padded = next_power_of_2(max_seqlen_q)
+    batch_size_padded = next_power_of_2(num_seqs)
 
     kernel_helion_v7_attention(
         t_output=out,
@@ -613,4 +616,5 @@ def helion_unified_attention(
         max_query_len=max_seqlen_q,  # need not to be a tensor
         num_seqs=num_seqs,
         q_block_padded_size=max_used_querylen_padded,
+        batch_size_padded=batch_size_padded,
     )
