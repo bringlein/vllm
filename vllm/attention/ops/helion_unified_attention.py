@@ -430,7 +430,8 @@ def kernel_helion_v7_attention(
     # use_3d_launchgrid = bool(hl.register_tunable("use_3d_launchgrid", BooleanFragment()))
     # use_3d_launchgrid = hl.specialize(hl.register_tunable("use_3d_launchgrid", BooleanFragment()))
     # q_outer_block_size = hl.register_block_size(int(q_block_size if use_3d_launchgrid else 1))
-    q_outer_block_size = hl.register_block_size(1, q_block_padded_size)
+    # q_outer_block_size = hl.register_block_size(1, q_block_padded_size)
+    q_outer_block_size = hl.register_block_size(1, 1 if q_block_padded_size == 1 else q_block_padded_size*4)
     # max_query_len_outer = max_query_len if use_3d_launchgrid else 1
     # max_query_len_outer = hl.register_tunable("max_query_len_outer", BaseIntegerFragment(1, max_query_len, 1))
     # q_inner_block_size = hl.register_block_size(int(q_block_size if not use_3d_launchgrid else 1))
@@ -453,7 +454,10 @@ def kernel_helion_v7_attention(
         # for tile_q_i in hl.tile(max_query_len_inner, block_size=q_inner_block_size):
         # q_inner_block_size = hl.ceil(q_inner_block_size_raw/q_outer_block_size)
         # q_inner_block_size = torch.maximum(q_inner_block_size_raw, q_outer_block_size)
-        for tile_q in hl.tile(tile_q_o.begin, tile_q_o.end, block_size=q_inner_block_size):
+        # for tile_q in hl.tile(tile_q_o.begin, tile_q_o.end, block_size=q_inner_block_size):
+        q_inner_block_end = torch.minimum(query_len, tile_q_o.index.max()+1)  # +1 because index is ...end-1]
+        # so this is then also an effective "skip" for the rest of the query outer loop? 
+        for tile_q in hl.tile(tile_q_o.begin, q_inner_block_end, block_size=q_inner_block_size):
             # tile_q = tile_q_o if use_3d_launchgrid else tile_q_i
             # q_block_size = q_outer_block_size if use_3d_launchgrid else q_inner_block_size
             # adjusted_tile_q_index = query_start + tile_q_o.begin + hl.arange(q_outer_block_size) \
