@@ -55,6 +55,7 @@ nv_configs = [
     helion.Config(block_sizes=[1, 1, 16], indexing=['pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['', '', '', '', '', '', ''], loop_orders=[[0, 1, 2]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, True, False], range_num_stages=[0, 0, 0], range_unroll_factors=[0, 0, 0], range_warp_specializes=[]),
     helion.Config(block_sizes=[1, 1, 4], indexing=['pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['', '', '', '', '', '', 'first'], loop_orders=[[0, 1, 2]], num_stages=2, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, False, False], range_num_stages=[0, 1, 0], range_unroll_factors=[0, 0, 0], range_warp_specializes=[]),
     helion.Config(block_sizes=[1, 1, 2], indexing=['pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['', '', '', '', '', '', 'last'], loop_orders=[[0, 1, 2]], maxnreg=256, num_sm_multiplier=2, num_stages=1, num_warps=8, pid_type='persistent_blocked', range_flattens=[None, None, None], range_multi_buffers=[None, None, None], range_num_stages=[1, 1, 1], range_unroll_factors=[1, 0, 0], range_warp_specializes=[]),
+    helion.Config(block_sizes=[1, 1, 2], indexing=['pointer', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['', '', '', '', '', '', ''], loop_orders=[[0, 1, 2]], num_stages=1, num_warps=8, pid_type='flat', range_flattens=[None, True, True], range_multi_buffers=[None, True, None], range_num_stages=[0, 2, 0], range_unroll_factors=[0, 0, 0], range_warp_specializes=[]),
     helion.Config(block_sizes=[8, 16, 2], indexing=['pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['', '', 'first', '', '', '', ''], loop_orders=[[0, 1, 2]], num_stages=2, num_warps=4, pid_type='flat', range_flattens=[None, None, None], range_multi_buffers=[None, None, False], range_num_stages=[0, 0, 0], range_unroll_factors=[0, 0, 0], range_warp_specializes=[]),
     helion.Config(block_sizes=[16, 16, 4], indexing=['pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['', '', '', '', '', '', ''], loop_orders=[[0, 1, 2]], num_stages=1, num_warps=4, pid_type='flat', range_flattens=[None, None, True], range_multi_buffers=[None, None, None], range_num_stages=[0, 1, 1], range_unroll_factors=[0, 0, 0], range_warp_specializes=[]),
     helion.Config(block_sizes=[16, 8, 2], indexing=['pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer'], l2_groupings=[1], load_eviction_policies=['', '', '', '', '', '', ''], loop_orders=[[0, 2, 1]], num_stages=1, num_warps=2, pid_type='flat', range_flattens=[None, None, True], range_multi_buffers=[None, None, None], range_num_stages=[0, 0, 0], range_unroll_factors=[0, 0, 1], range_warp_specializes=[]),
@@ -257,9 +258,9 @@ configs = nv_configs if torch.version.cuda else amd_configs
     allow_warp_specialize=True,
     static_shapes=False,
     index_dtype=torch.int64,
-    # configs=configs,
+    configs=configs,
     autotune_baseline_fn=_triton_baseline_fn,
-    autotune_effort="full",
+    autotune_effort="quick",
     # for in-place autotuning, not recommended for micro-benchmarks
     #  or initial config selection
     autotune_accuracy_check=False,
@@ -468,8 +469,9 @@ def helion_unified_attention(
     # max_used_querylen_padded = (
     #     1 if max_seqlen_q == 1 else next_power_of_2(max(64, max_seqlen_q))
     # )
-    max_used_querylen_padded = next_power_of_2(max_seqlen_q)
-    batch_size_padded = next_power_of_2(num_seqs)
+    # max_used_querylen_padded = min(256, next_power_of_2(max_seqlen_q))
+    max_used_querylen_padded = next_power_of_2(max_seqlen_q) if next_power_of_2(max_seqlen_q) in [1, 8, 16, 32, 64] else 128
+    batch_size_padded = min(256, next_power_of_2(num_seqs))
 
     kernel_helion_v7_attention(
         t_output=out,
