@@ -295,8 +295,10 @@ def helion_unified_attention(
     # )
     # max_used_querylen_padded = min(256, next_power_of_2(max_seqlen_q))
     max_used_querylen_padded = next_power_of_2(max_seqlen_q) if next_power_of_2(max_seqlen_q) in [1, 8, 16, 32, 64] else 128
-    batch_size_padded = min(256, next_power_of_2(num_seqs))
-    # batch_size_padded = min(256, next_power_of_2(num_seqs)) if num_seqs >= 16 else num_seqs
+    
+    batch_size_padded_coarse = min(256, next_power_of_2(num_seqs))
+    batch_size_padded_fine = min(256, next_power_of_2(num_seqs)) if num_seqs >= 16 else num_seqs
+    batch_size_padded = batch_size_padded_coarse if torch.version.cuda else batch_size_padded_fine
 
     kernel_helion_v7_attention(
         t_output=out,
