@@ -63,12 +63,15 @@ class HelionAttentionMetadata:
     block_table: torch.Tensor
     slot_mapping: torch.Tensor
 
-    # For cascade attention.
+     # For cascade attention.
     use_cascade: bool
     common_prefix_len: int
     cu_prefix_query_lens: torch.Tensor | None
     prefix_kv_lens: torch.Tensor | None
     suffix_kv_lens: torch.Tensor | None
+    
+    # Number of decode tokens in the batch (for mix_ratio)
+    num_decode_tokens: int
 
     # Optional aot scheduling
     scheduler_metadata: torch.Tensor | None = None
@@ -162,6 +165,7 @@ class HelionAttentionMetadataBuilder(
             prefix_kv_lens=prefix_kv_lens,
             suffix_kv_lens=suffix_kv_lens,
             prefix_scheduler_metadata=prefix_scheduler_metadata,
+            num_decode_tokens=num_actual_tokens,
         )
         return attn_metadata
 
@@ -372,6 +376,7 @@ class HelionAttentionImpl(AttentionImpl):
             window_size=self.sliding_window,
             block_table=block_table,
             num_seqs=num_seqs,
+            num_decode_tokens=attn_metadata.num_decode_tokens,
             softcap=self.logits_soft_cap,
             q_descale=None,
             k_descale=None,

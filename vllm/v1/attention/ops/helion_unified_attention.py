@@ -24,6 +24,7 @@ def _triton_baseline_fn(
     num_seqs,
     q_block_padded_size,
     batch_size_padded,
+    mix_ratio,
 ):
     max_seqlen = t_seq_lens.max()
     return triton_baseline_unified_attention(
@@ -240,6 +241,7 @@ configs = nv_configs if torch.version.cuda else amd_configs
     autotune_ignore_errors=True,
     print_repro=False,
     print_output_code=False,
+    # autotune_log="",
 )
 def kernel_helion_v9_attention(
     t_output,  # [num_tokens, num_query_heads, head_size]
@@ -256,6 +258,7 @@ def kernel_helion_v9_attention(
     q_block_padded_size: hl.constexpr,
     # to trigger re-compilation (and re-tuning) for small and large batches
     batch_size_padded: hl.constexpr,
+    mix_ratio: hl.constexpr,
 ):
     head_size = hl.specialize(t_query.size(2))
     num_kv_heads = hl.specialize(t_key_cache.size(2))
@@ -392,6 +395,7 @@ def helion_unified_attention(
     window_size,
     block_table,
     num_seqs: int,
+    num_decode_tokens: int,
     softcap,
     q_descale,
     k_descale,
@@ -418,6 +422,8 @@ def helion_unified_attention(
     batch_size_padded_fine = min(256, next_power_of_2(num_seqs)) if num_seqs >= 16 else num_seqs
     batch_size_padded = batch_size_padded_coarse if torch.version.cuda else batch_size_padded_fine
 
+    mix_ratio = (next_power_of_2(num_decode_tokens) * 8096) // batch_size_padded
+
     kernel_helion_v9_attention(
         t_output=out,
         t_query=q,
@@ -431,4 +437,5 @@ def helion_unified_attention(
         num_seqs=num_seqs,
         q_block_padded_size=max_used_querylen_padded,
         batch_size_padded=batch_size_padded,
+        mix_ratio=mix_ratio,
     )
