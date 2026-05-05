@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import helion
 import helion.language as hl
+import os
 import torch
 
 from vllm.utils.math_utils import next_power_of_2
