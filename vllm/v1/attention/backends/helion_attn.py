@@ -16,14 +16,17 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 )
 from vllm.platforms import current_platform
 from vllm.platforms.interface import DeviceCapability
+
 try:
     from vllm.utils.torch_utils import is_quantized_kv_cache
 except ImportError:
 
     def is_quantized_kv_cache(kv_cache_dtype: str) -> bool:
-        return kv_cache_dtype.startswith(
-            "fp8"
-        ) or kv_cache_dtype.endswith("per_token_head")
+        return kv_cache_dtype.startswith("fp8") or kv_cache_dtype.endswith(
+            "per_token_head"
+        )
+
+
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionCGSupport,
@@ -63,13 +66,13 @@ class HelionAttentionMetadata:
     block_table: torch.Tensor
     slot_mapping: torch.Tensor
 
-     # For cascade attention.
+    # For cascade attention.
     use_cascade: bool
     common_prefix_len: int
     cu_prefix_query_lens: torch.Tensor | None
     prefix_kv_lens: torch.Tensor | None
     suffix_kv_lens: torch.Tensor | None
-    
+
     # Number of decode tokens in the batch (for mix_ratio)
     num_decode_tokens: int
 
@@ -78,9 +81,7 @@ class HelionAttentionMetadata:
     prefix_scheduler_metadata: torch.Tensor | None = None
 
 
-class HelionAttentionMetadataBuilder(
-    AttentionMetadataBuilder[HelionAttentionMetadata]
-):
+class HelionAttentionMetadataBuilder(AttentionMetadataBuilder[HelionAttentionMetadata]):
     _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.ALWAYS
 
     def __init__(
@@ -98,19 +99,41 @@ class HelionAttentionMetadataBuilder(
         self.num_heads_q = model_config.get_num_attention_heads(
             vllm_config.parallel_config
         )
-        self.num_heads_kv = model_config.get_num_kv_heads(
-            vllm_config.parallel_config
-        )
+        self.num_heads_kv = model_config.get_num_kv_heads(vllm_config.parallel_config)
         self.headdim = model_config.get_head_size()
 
     def build_for_cudagraph_capture(
         self, common_attn_metadata: CommonAttentionMetadata
     ) -> HelionAttentionMetadata:
+        """
+        Build attention metadata for CUDA graph capture.
+
+        For Helion, we preserve max_query_len and seq_lens for mixed prefill-decode
+        batches to ensure the kernel compiles with appropriate q_block_padded_size
+        constexpr values.
+        Yes, that increases capture time but the performance of the Helion kernel is
+        sensitive to it. Also, we do autotuning during capture (for now) so we want
+        to be sure we tune the right thing.
+        """
         attn_metadata = self.build(0, common_attn_metadata)
-        # When doing full graph capture, setting seq_lens to
-        # max_model_len will cause graph capture to be extremely
-        # slow, so here we set it to 1.
-        attn_metadata.seq_lens.fill_(1)
+
+        # Check if this is a mixed prefill-decode batch
+        is_mixed_batch = common_attn_metadata.max_query_len > 1
+
+        if is_mixed_batch:
+            # For mixed batches, cap seq_lens to avoid slow capture but preserve
+            # the fact that max_query_len > 1. This ensures Helion compiles with
+            # q_block_padded_size > 1.
+            #
+            # vLLM already sets max_query_len = bucket_size for mixed batches,
+            # so we get separate compiled kernels for different bucket sizes.
+            seq_lens_cap = min(common_attn_metadata.max_query_len, 128)
+            attn_metadata.seq_lens.fill_(seq_lens_cap)
+            attn_metadata.max_seq_len = max(seq_lens_cap, attn_metadata.max_query_len)
+        else:
+            # Pure decode batch: use seq_lens=1 for optimized decode path
+            attn_metadata.seq_lens.fill_(1)
+
         return attn_metadata
 
     def build(
@@ -142,9 +165,7 @@ class HelionAttentionMetadataBuilder(
                 dtype=torch.int32,
                 device=self.device,
             )
-            suffix_kv_lens = (
-                common_attn_metadata.seq_lens.cpu() - common_prefix_len
-            )
+            suffix_kv_lens = common_attn_metadata.seq_lens.cpu() - common_prefix_len
             suffix_kv_lens = suffix_kv_lens.to(self.device)
         else:
             cu_prefix_query_lens = None
@@ -229,9 +250,7 @@ class HelionAttentionBackend(AttentionBackend):
         return head_size >= 32
 
     @classmethod
-    def supports_compute_capability(
-        cls, capability: DeviceCapability
-    ) -> bool:
+    def supports_compute_capability(cls, capability: DeviceCapability) -> bool:
         return True
 
 
