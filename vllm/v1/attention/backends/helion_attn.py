@@ -301,6 +301,13 @@ class HelionAttentionImpl(AttentionImpl):
         self.fp8_dtype = current_platform.fp8_dtype()
         self.supports_quant_query_input = current_platform.is_cuda()
 
+        # Pre-allocate split-K temporary buffers for atomic accumulation
+        # Similar to Triton's softmax_segm_* buffers
+        # These are reused across kernel launches to avoid allocation overhead
+        self._split_k_buffers_initialized = False
+        self._tmp_acc_scaled: torch.Tensor | None = None
+        self._tmp_L_scaled: torch.Tensor | None = None
+
     def do_kv_cache_update(
         self,
         layer: AttentionLayer,
@@ -381,6 +388,13 @@ class HelionAttentionImpl(AttentionImpl):
         block_table = attn_metadata.block_table
         num_seqs = cu_seqlens_q.shape[0] - 1
 
+        # Initialize split-K buffers if needed
+        self._ensure_split_k_buffers(
+            num_seqs=num_seqs,
+            max_query_len=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+        )
+
         helion_unified_attention(
             q=query[:num_actual_tokens],
             k=key_cache,
@@ -400,6 +414,63 @@ class HelionAttentionImpl(AttentionImpl):
             q_descale=None,
             k_descale=None,
             v_descale=None,
+            tmp_acc_scaled=self._tmp_acc_scaled,
+            tmp_L_scaled=self._tmp_L_scaled,
         )
 
         return output
+
+    def _ensure_split_k_buffers(
+        self,
+        num_seqs: int,
+        max_query_len: int,
+        max_seqlen_k: int,
+    ) -> None:
+        """Pre-allocate split-K temporary buffers for atomic accumulation.
+        
+        Buffers are allocated once and reused across kernel launches,
+        similar to Triton's softmax_segm_* buffers.
+        
+        Args:
+            num_seqs: Number of sequences in the batch
+            max_query_len: Maximum query length
+            max_seqlen_k: Maximum sequence length (used to compute max blocks)
+        """
+        if self._split_k_buffers_initialized:
+            return
+        
+        # Compute max outer chunks based on actual max_seqlen_k
+        # Formula: ceil(max_seqlen_k / (page_size * split_k_factor))
+        # Use split_k_factor=1 for conservative buffer sizing
+        page_size = self.block_size
+        split_k_factor = 1  # Conservative: assume minimum split
+        max_num_blocks = (max_seqlen_k + page_size - 1) // page_size
+        max_outer_chunks = (max_num_blocks + split_k_factor - 1) // split_k_factor
+        
+        # Cap max_outer_chunks to a reasonable value (like Triton's NUM_PAR_SOFTMAX_SEGMENTS=16)
+        # but allow it to grow for longer sequences
+        # For 32k tokens with page_size=16: 2048 blocks, which is acceptable
+        max_outer_chunks = min(max_outer_chunks, 4096)  # Hard cap for safety
+        
+        # Allocate buffers: [num_seqs, num_heads_q, max_query_len, max_outer_chunks, ...]
+        # Note: We use num_seqs from metadata, which varies per batch
+        # In production, could pre-allocate based on max_concurrent_seqs
+        head_size_padded = (self.head_size + 15) & ~15  # Pad to multiple of 16
+        
+        self._tmp_acc_scaled = torch.zeros(
+            (num_seqs, self.num_heads, max_query_len, max_outer_chunks, head_size_padded),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        self._tmp_L_scaled = torch.zeros(
+            (num_seqs, self.num_heads, max_query_len, max_outer_chunks),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        self._tmp_L_scaled = torch.zeros(
+            (num_seqs, self.num_heads, max_query_len, max_outer_chunks),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        
+        self._split_k_buffers_initialized = True
