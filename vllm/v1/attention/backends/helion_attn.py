@@ -80,6 +80,10 @@ class HelionAttentionMetadata:
     scheduler_metadata: torch.Tensor | None = None
     prefix_scheduler_metadata: torch.Tensor | None = None
 
+    capture_num_seqs: int | None = None
+    capture_max_query_len: int | None = None
+    capture_num_decode_tokens: int | None = None
+
 
 class HelionAttentionMetadataBuilder(AttentionMetadataBuilder[HelionAttentionMetadata]):
     _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.ALWAYS
@@ -116,6 +120,12 @@ class HelionAttentionMetadataBuilder(AttentionMetadataBuilder[HelionAttentionMet
         to be sure we tune the right thing.
         """
         attn_metadata = self.build(0, common_attn_metadata)
+
+        attn_metadata.capture_num_seqs = (
+            common_attn_metadata.query_start_loc.shape[0] - 1
+        )
+        attn_metadata.capture_max_query_len = common_attn_metadata.max_query_len
+        attn_metadata.capture_num_decode_tokens = attn_metadata.num_decode_tokens
 
         # Check if this is a mixed prefill-decode batch
         is_mixed_batch = common_attn_metadata.max_query_len > 1
@@ -400,6 +410,9 @@ class HelionAttentionImpl(AttentionImpl):
             q_descale=None,
             k_descale=None,
             v_descale=None,
+            capture_num_seqs=attn_metadata.capture_num_seqs,
+            capture_max_query_len=attn_metadata.capture_max_query_len,
+            capture_num_decode_tokens=attn_metadata.capture_num_decode_tokens,
         )
 
         return output

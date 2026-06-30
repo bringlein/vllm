@@ -223,6 +223,9 @@ def helion_unified_attention(
     k_descale,
     v_descale,
     alibi_slopes=None,
+    capture_num_seqs: int | None = None,
+    capture_max_query_len: int | None = None,
+    capture_num_decode_tokens: int | None = None,
 ):
     assert causal, "Only causal attention is supported"
     assert q_descale is None, "Q scales not supported"
@@ -238,21 +241,37 @@ def helion_unified_attention(
         "Block size must be at least 32 for fp8"
     )
 
-    max_used_querylen_padded = (
-        next_power_of_2(max_seqlen_q)
-        if next_power_of_2(max_seqlen_q) in [1, 8, 16, 32, 64]
-        else 128
-    )
+    if capture_num_seqs is not None:
+        # CUDA graph capture/replay: the batch is already padded to a fixed
+        # bucket, so num_seqs and max_query_len should be the values used
+        # by the helion compiler. We also pin num_decode_tokens so that the
+        # mix_ratio constexpr triggers a recompile/re-autotune whenever the
+        # prefill/decode ratio of a capture bucket changes.
+        batch_size_padded = capture_num_seqs
+        max_used_querylen_padded = capture_max_query_len
+        mix_ratio_num_decode_tokens = capture_num_decode_tokens
+    else:
+        # Eager (non-captured) runs: derive padding from the runtime shapes.
+        # trade-off: number of buckets (re-compilation time / JIT jitter) vs.
+        # performance.
+        max_used_querylen_padded = (
+            next_power_of_2(max_seqlen_q)
+            if next_power_of_2(max_seqlen_q) in [1, 8, 16, 32, 64]
+            else 128
+        )
 
-    batch_size_padded_coarse = min(256, next_power_of_2(num_seqs))
-    batch_size_padded_fine = (
-        min(256, next_power_of_2(num_seqs)) if num_seqs >= 16 else num_seqs
-    )
-    batch_size_padded = (
-        batch_size_padded_coarse if torch.version.cuda else batch_size_padded_fine
-    )
+        batch_size_padded_coarse = min(256, next_power_of_2(num_seqs))
+        batch_size_padded_fine = (
+            min(256, next_power_of_2(num_seqs)) if num_seqs >= 16 else num_seqs
+        )
+        batch_size_padded = (
+            batch_size_padded_coarse if torch.version.cuda else batch_size_padded_fine
+        )
+        mix_ratio_num_decode_tokens = num_decode_tokens
 
-    mix_ratio = (next_power_of_2(num_decode_tokens) * 8096) // batch_size_padded
+    mix_ratio = (
+        next_power_of_2(mix_ratio_num_decode_tokens) * 8096
+    ) // batch_size_padded
 
     kernel_helion_v9_attention(
         t_output=out,
