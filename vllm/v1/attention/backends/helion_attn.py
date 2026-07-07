@@ -73,7 +73,8 @@ class HelionAttentionMetadata:
     prefix_kv_lens: torch.Tensor | None
     suffix_kv_lens: torch.Tensor | None
 
-    # Number of decode tokens in the batch (for mix_ratio)
+    # Number of decode tokens in the batch (drives the decode/prefill and
+    # prefill-skew specialization buckets)
     num_decode_tokens: int
 
     # Optional aot scheduling
@@ -125,6 +126,13 @@ class HelionAttentionMetadataBuilder(AttentionMetadataBuilder[HelionAttentionMet
             common_attn_metadata.query_start_loc.shape[0] - 1
         )
         attn_metadata.capture_max_query_len = common_attn_metadata.max_query_len
+
+        # build() already computed the TRUE decode-token count (= decode
+        # sequences, since a decode sequence has query_len == 1) for this
+        # synthetic capture batch. Pinning it here ensures the Helion mix
+        # buckets distinguish a pure-decode capture (all query_len == 1) from a
+        # prefill/mixed capture (query_len > 1), so they compile/tune as
+        # different specializations.
         attn_metadata.capture_num_decode_tokens = attn_metadata.num_decode_tokens
 
         # Check if this is a mixed prefill-decode batch
@@ -161,6 +169,21 @@ class HelionAttentionMetadataBuilder(AttentionMetadataBuilder[HelionAttentionMet
         block_table_tensor = common_attn_metadata.block_table_tensor
         slot_mapping = common_attn_metadata.slot_mapping
 
+        # True number of decode tokens (= decode sequences, since a decode
+        # sequence has query_len == 1). This drives the Helion mix buckets that
+        # steer JIT specialization / re-autotuning; using num_actual_tokens here
+        # would collapse the decode/prefill-ratio bucket to a constant. Computed
+        # from the CPU query_start_loc copy to avoid a GPU sync on the hot path.
+        if max_query_len <= 1:
+            # Pure decode batch: every sequence has query_len == 1.
+            num_decode_tokens = common_attn_metadata.num_reqs
+        else:
+            query_lens_cpu = (
+                common_attn_metadata.query_start_loc_cpu[1:]
+                - common_attn_metadata.query_start_loc_cpu[:-1]
+            )
+            num_decode_tokens = int((query_lens_cpu == 1).sum().item())
+
         use_cascade = common_prefix_len > 0
 
         prefix_scheduler_metadata = None
@@ -196,7 +219,7 @@ class HelionAttentionMetadataBuilder(AttentionMetadataBuilder[HelionAttentionMet
             prefix_kv_lens=prefix_kv_lens,
             suffix_kv_lens=suffix_kv_lens,
             prefix_scheduler_metadata=prefix_scheduler_metadata,
-            num_decode_tokens=num_actual_tokens,
+            num_decode_tokens=num_decode_tokens,
         )
         return attn_metadata
 

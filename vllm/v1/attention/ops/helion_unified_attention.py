@@ -12,6 +12,61 @@ from .triton_unified_attention import (
     unified_attention as triton_baseline_unified_attention,
 )
 
+# Number of buckets used to discretize the two batch-shape characteristics
+# that steer JIT specialization / re-autotuning. Each characteristic is mapped
+# to an integer in [0, MIX_NUM_BUCKETS]; more buckets = finer specialization
+# (more configs to tune) vs. fewer buckets = coarser (more cache reuse).
+MIX_NUM_BUCKETS = 8
+
+
+def _compute_mix_buckets(
+    num_total_query_tokens: int,
+    num_decode_tokens: int,
+    num_seqs: int,
+    max_query_len: int,
+) -> tuple[int, int]:
+    """Derive two orthogonal batch-shape buckets for kernel specialization.
+
+    Both buckets are host-side integer computations (no GPU sync) so they are
+    cheap to evaluate on the hot path.
+
+    Returns:
+        A tuple ``(decode_frac_bucket, prefill_skew_bucket)``:
+
+        - ``decode_frac_bucket`` in ``[0, MIX_NUM_BUCKETS]`` captures the
+          decode/prefill token ratio: ``0`` = pure prefill, ``MIX_NUM_BUCKETS``
+          = pure decode. Unlike the previous ``mix_ratio`` it is independent of
+          absolute batch size, so it does not collapse across batch sizes.
+        - ``prefill_skew_bucket`` in ``[0, MIX_NUM_BUCKETS]`` captures the shape
+          of the prefill query-length distribution as
+          ``mean_prefill_qlen / max_prefill_qlen``. Uniform-length prefills map
+          to ``MIX_NUM_BUCKETS``; skewed (mixed short/long) prefills map lower.
+          It is ``0`` when there are no prefill sequences.
+    """
+    if num_total_query_tokens <= 0:
+        return 0, 0
+
+    decode_frac_bucket = round(
+        MIX_NUM_BUCKETS * num_decode_tokens / num_total_query_tokens
+    )
+
+    # Each decode sequence contributes exactly one query token, so the number of
+    # decode sequences equals num_decode_tokens.
+    num_prefill_seqs = num_seqs - num_decode_tokens
+    prefill_tokens = num_total_query_tokens - num_decode_tokens
+    if num_prefill_seqs > 0 and max_query_len > 0:
+        mean_prefill_qlen = prefill_tokens / num_prefill_seqs
+        prefill_skew_bucket = round(
+            MIX_NUM_BUCKETS * mean_prefill_qlen / max_query_len
+        )
+        # Clamp to guard against pathological inputs (e.g. a stray decode token
+        # counted as prefill making the mean exceed max_query_len).
+        prefill_skew_bucket = max(0, min(MIX_NUM_BUCKETS, prefill_skew_bucket))
+    else:
+        prefill_skew_bucket = 0
+
+    return decode_frac_bucket, prefill_skew_bucket
+
 
 def _triton_baseline_fn(
     t_output,  # [num_tokens, num_query_heads, head_size]
@@ -26,7 +81,8 @@ def _triton_baseline_fn(
     num_seqs,
     q_block_padded_size,
     batch_size_padded,
-    mix_ratio,
+    decode_frac_bucket,
+    prefill_skew_bucket,
 ):
     max_seqlen = t_seq_lens.max()
     return triton_baseline_unified_attention(
@@ -80,7 +136,12 @@ def kernel_helion_v9_attention(
     q_block_padded_size: hl.constexpr,
     # to trigger re-compilation (and re-tuning) for small and large batches
     batch_size_padded: hl.constexpr,
-    mix_ratio: hl.constexpr,
+    # decode/prefill token-ratio bucket: triggers re-tuning for decode-heavy
+    # vs prefill-heavy batches (0 = pure prefill .. MIX_NUM_BUCKETS = pure decode)
+    decode_frac_bucket: hl.constexpr,
+    # prefill query-length skew bucket: triggers re-tuning when the prefill
+    # length distribution changes (uniform vs mixed short/long prompts)
+    prefill_skew_bucket: hl.constexpr,
 ):
     head_size = hl.specialize(t_query.size(2))
     num_kv_heads = hl.specialize(t_key_cache.size(2))
@@ -244,12 +305,17 @@ def helion_unified_attention(
     if capture_num_seqs is not None:
         # CUDA graph capture/replay: the batch is already padded to a fixed
         # bucket, so num_seqs and max_query_len should be the values used
-        # by the helion compiler. We also pin num_decode_tokens so that the
-        # mix_ratio constexpr triggers a recompile/re-autotune whenever the
-        # prefill/decode ratio of a capture bucket changes.
+        # by the helion compiler. capture_num_decode_tokens carries the TRUE
+        # decode-sequence count of the synthetic capture batch (set by the
+        # backend), so the mix buckets distinguish a pure-decode capture from a
+        # prefill/mixed capture and compile/tune them as separate
+        # specializations. Note: the buckets are frozen at capture time; a
+        # replayed graph cannot re-specialize if the runtime batch differs.
         batch_size_padded = capture_num_seqs
         max_used_querylen_padded = capture_max_query_len
-        mix_ratio_num_decode_tokens = capture_num_decode_tokens
+        mix_num_seqs = capture_num_seqs
+        mix_num_decode_tokens = capture_num_decode_tokens
+        mix_max_query_len = capture_max_query_len
     else:
         # Eager (non-captured) runs: derive padding from the runtime shapes.
         # trade-off: number of buckets (re-compilation time / JIT jitter) vs.
@@ -267,11 +333,20 @@ def helion_unified_attention(
         batch_size_padded = (
             batch_size_padded_coarse if torch.version.cuda else batch_size_padded_fine
         )
-        mix_ratio_num_decode_tokens = num_decode_tokens
+        mix_num_seqs = num_seqs
+        mix_num_decode_tokens = num_decode_tokens
+        mix_max_query_len = max_seqlen_q
 
-    mix_ratio = (
-        next_power_of_2(mix_ratio_num_decode_tokens) * 8096
-    ) // batch_size_padded
+    # Two orthogonal constexpr buckets steer JIT specialization / re-autotuning:
+    #  - decode_frac_bucket: decode-heavy vs prefill-heavy batches
+    #  - prefill_skew_bucket: uniform vs mixed-length prefill distributions
+    # q.shape[0] is the total number of query tokens (no GPU sync).
+    decode_frac_bucket, prefill_skew_bucket = _compute_mix_buckets(
+        num_total_query_tokens=q.shape[0],
+        num_decode_tokens=mix_num_decode_tokens,
+        num_seqs=mix_num_seqs,
+        max_query_len=mix_max_query_len,
+    )
 
     kernel_helion_v9_attention(
         t_output=out,
@@ -286,5 +361,6 @@ def helion_unified_attention(
         num_seqs=num_seqs,
         q_block_padded_size=max_used_querylen_padded,
         batch_size_padded=batch_size_padded,
-        mix_ratio=mix_ratio,
+        decode_frac_bucket=decode_frac_bucket,
+        prefill_skew_bucket=prefill_skew_bucket,
     )
