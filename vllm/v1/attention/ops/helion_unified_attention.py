@@ -328,6 +328,13 @@ def kernel_helion_v10_attention(
 
     q_block_size = hl.register_block_size(1, q_block_padded_size)
     num_pages_at_once = hl.register_block_size(1, 32)
+    # Number of KV tokens processed per inner tile. Hoisted to the top level of
+    # the kernel (rather than recomputed inside the inner loop) so the fused
+    # persistent (barrier) kernel has a single, well-scoped binding for it;
+    # recomputing it inside the stage-1 inner loop makes Helion hoist it to a
+    # kernel parameter that the stage-2 region then references out of scope
+    # (NameError: 'block_n_size' is not defined in the generated Triton).
+    block_n_size = num_pages_at_once * page_size
 
     # ---------------------------------------------------------------------
     # Stage 1: per-segment partial attention.
@@ -405,7 +412,6 @@ def kernel_helion_v10_attention(
             ):
                 inner_block_idx = tile_n_inner.begin
 
-                block_n_size = num_pages_at_once * page_size
                 # explicit load due to wrong if tile_n is partial
                 blk_idxs = hl.load(
                     t_block_tables,
