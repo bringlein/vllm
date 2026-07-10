@@ -328,16 +328,6 @@ def kernel_helion_v10_attention(
 
     q_block_size = hl.register_block_size(1, q_block_padded_size)
     num_pages_at_once = hl.register_block_size(1, 32)
-    # Number of KV tokens processed per inner tile. Hoisted to the top level of
-    # the kernel (rather than recomputed inside the inner loop) so the fused
-    # persistent (barrier) kernel has a single, well-scoped binding for it;
-    # recomputing it inside the stage-1 inner loop makes Helion hoist it to a
-    # kernel parameter that the stage-2 region then references out of scope
-    # (NameError: 'block_n_size' is not defined in the generated Triton).
-    block_n_size = num_pages_at_once * page_size
-    # Query rows (queries-per-kv * q tile) per stage-1 tile. Hoisted to the top
-    # level for the same fused-kernel scoping reason as block_n_size above.
-    block_m_size = num_queries_per_kv * q_block_size
 
     # ---------------------------------------------------------------------
     # Stage 1: per-segment partial attention.
@@ -386,6 +376,13 @@ def kernel_helion_v10_attention(
         # both branches is hard to lower. Instead we guard only on query
         # validity and let an empty segment fall through to the neutral store.
         if query_start + tile_q.begin < query_end:
+            # Match the v9 kernel exactly: these derived scalars are defined
+            # inside the loop body (device scope) and used in-device, so Helion
+            # codegens them in-kernel instead of lifting them to host launch
+            # args (which breaks the fused persistent/barrier kernel).
+            block_m_size = num_queries_per_kv * q_block_size
+            kv_head_idx = tile_m.begin // num_queries_per_kv
+
             q_load_mask = adjusted_tile_q_index[:, None, None] < query_end
             # (tile_q, tile_m, HEAD_SIZE)
             q = hl.load(
@@ -412,13 +409,7 @@ def kernel_helion_v10_attention(
             ):
                 inner_block_idx = tile_n_inner.begin
 
-                # Computed inside the inner loop (not the outer grid body) so it
-                # stays local to the stage-1 region of the fused persistent
-                # (barrier) kernel; a value assigned in the outer body gets
-                # hoisted to a kernel parameter that stage-2's region then
-                # references out of scope (NameError in the generated Triton).
-                kv_head_idx = tile_m.begin // num_queries_per_kv
-
+                block_n_size = num_pages_at_once * page_size
                 # explicit load due to wrong if tile_n is partial
                 blk_idxs = hl.load(
                     t_block_tables,
