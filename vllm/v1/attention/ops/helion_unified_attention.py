@@ -501,6 +501,11 @@ def kernel_helion_v10_attention(
     # Stage 2: reduction. For each (seq, query position, head group) combine
     # the per-segment partials with a numerically stable global-max rescale
     # (mirrors Triton's reduce_segments), normalize, and write the output.
+    #
+    # The segments are reduced with an *online* (streaming) update so the live
+    # tile stays (q_block, nq_per_kv, head_size); we never materialize the full
+    # (num_segments, head_size) tensor, which would blow the register/SMEM
+    # budget of the fused persistent (barrier) kernel.
     # ---------------------------------------------------------------------
     for seq_tile, tile_m, tile_q in hl.tile(
         [num_seqs, num_query_heads, max_query_len],
@@ -515,43 +520,61 @@ def kernel_helion_v10_attention(
             query_head_offset = tile_m.begin + hl.arange(num_queries_per_kv)
             load_mask = adjusted_tile_q_index[:, None] < query_end
 
-            # (q_block_size, num_queries_per_kv, num_segments)
-            seg_M = hl.load(
-                tmp_M,
-                [adjusted_tile_q_index, query_head_offset, hl.arange(num_segments)],
-                extra_mask=load_mask[:, :, None],
+            # Running online-reduction state over segments.
+            m_run = hl.full(
+                [q_block_size, num_queries_per_kv], float("-inf"), dtype=torch.float32
             )
-            seg_L = hl.load(
-                tmp_L,
-                [adjusted_tile_q_index, query_head_offset, hl.arange(num_segments)],
-                extra_mask=load_mask[:, :, None],
+            l_run = hl.full(
+                [q_block_size, num_queries_per_kv], 0.0, dtype=torch.float32
             )
-            # (q_block_size, num_queries_per_kv, num_segments, head_size)
-            seg_out = hl.load(
-                tmp_out,
-                [
-                    adjusted_tile_q_index,
-                    query_head_offset,
-                    hl.arange(num_segments),
-                    hl.arange(head_size),
-                ],
-                extra_mask=load_mask[:, :, None, None],
+            acc_run = hl.zeros(
+                [q_block_size, num_queries_per_kv, head_size], dtype=torch.float32
             )
 
-            # Global max across segments, then stable rescale factor in [0, 1].
-            overall_max = torch.amax(seg_M, dim=2)  # (q_block, nq_per_kv)
-            rescale = torch.exp(seg_M - overall_max[:, :, None])  # (..., num_segments)
+            # One segment per iteration: load its (q_block, nq_per_kv[, head])
+            # partials and fold them into the running numerator/denominator/max.
+            for tile_seg in hl.tile(num_segments, block_size=1):
+                seg_idx = tile_seg.begin
 
-            overall_L = torch.sum(seg_L * rescale, dim=2)  # (q_block, nq_per_kv)
-            acc = torch.sum(
-                seg_out * rescale[:, :, :, None], dim=2
-            )  # (q_block, nq_per_kv, head_size)
+                # (q_block_size, num_queries_per_kv)
+                M_s = hl.load(
+                    tmp_M,
+                    [adjusted_tile_q_index, query_head_offset, seg_idx],
+                    extra_mask=load_mask,
+                )
+                L_s = hl.load(
+                    tmp_L,
+                    [adjusted_tile_q_index, query_head_offset, seg_idx],
+                    extra_mask=load_mask,
+                )
+                # (q_block_size, num_queries_per_kv, head_size)
+                acc_s = hl.load(
+                    tmp_out,
+                    [
+                        adjusted_tile_q_index,
+                        query_head_offset,
+                        seg_idx,
+                        hl.arange(head_size),
+                    ],
+                    extra_mask=load_mask[:, :, None],
+                )
 
-            # Safe divide (a fully-masked row has overall_L == 0).
+                # Stable streaming merge (both exp args are <= 0). Guard the
+                # -inf - -inf == nan case (running max still -inf and this
+                # segment empty) by forcing the running rescale to 0 there.
+                m_new = torch.maximum(m_run, M_s)
+                m_new_safe = torch.where(m_new > float("-inf"), m_new, 0.0)
+                scale_run = torch.exp(m_run - m_new_safe)
+                scale_s = torch.exp(M_s - m_new_safe)
+                acc_run = acc_run * scale_run[:, :, None] + acc_s * scale_s[:, :, None]
+                l_run = l_run * scale_run + L_s * scale_s
+                m_run = m_new
+
+            # Final normalization. A fully-masked/empty row has l_run == 0.
             acc = torch.where(
-                overall_L[:, :, None] > 0.0,
-                acc / overall_L[:, :, None],
-                acc,
+                l_run[:, :, None] > 0.0,
+                acc_run / l_run[:, :, None],
+                acc_run,
             )
 
             store_mask = adjusted_tile_q_index[:, None, None] < query_end
