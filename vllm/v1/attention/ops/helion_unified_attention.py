@@ -533,18 +533,18 @@ def kernel_helion_v10_attention(
 
             # One segment per iteration: load its (q_block, nq_per_kv[, head])
             # partials and fold them into the running numerator/denominator/max.
-            for tile_seg in hl.tile(num_segments, block_size=1):
-                seg_idx = tile_seg.begin
+            for tile_seg_reduce in hl.tile(num_segments, block_size=1):
+                seg_idx_reduce = tile_seg_reduce.begin
 
                 # (q_block_size, num_queries_per_kv)
                 M_s = hl.load(
                     tmp_M,
-                    [adjusted_tile_q_index, query_head_offset, seg_idx],
+                    [adjusted_tile_q_index, query_head_offset, seg_idx_reduce],
                     extra_mask=load_mask,
                 )
                 L_s = hl.load(
                     tmp_L,
-                    [adjusted_tile_q_index, query_head_offset, seg_idx],
+                    [adjusted_tile_q_index, query_head_offset, seg_idx_reduce],
                     extra_mask=load_mask,
                 )
                 # (q_block_size, num_queries_per_kv, head_size)
@@ -553,7 +553,7 @@ def kernel_helion_v10_attention(
                     [
                         adjusted_tile_q_index,
                         query_head_offset,
-                        seg_idx,
+                        seg_idx_reduce,
                         hl.arange(head_size),
                     ],
                     extra_mask=load_mask[:, :, None],
