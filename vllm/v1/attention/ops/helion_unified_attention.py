@@ -391,7 +391,13 @@ def kernel_helion_v10_attention(
                 extra_mask=q_load_mask,
             )
             # (tile_m, HEAD_SIZE)
-            q = q.flatten(start_dim=0, end_dim=1)
+            # Use an explicit reshape target (block_m_size, head_size) rather
+            # than flatten(): flatten() leaves the merged dim symbolic, and in
+            # the fused persistent (barrier) kernel Helion back-derives that
+            # size on the host from an arbitrary device-local tensor
+            # (S.size(0)) that is not in the host-wrapper scope
+            # (NameError: name 'S' is not defined).
+            q = q.reshape([block_m_size, head_size])
 
             # Neutral online-softmax state. Unlike the single-pass kernels, L
             # MUST start at 0.0 here: an empty segment runs zero inner
