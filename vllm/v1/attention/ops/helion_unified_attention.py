@@ -349,16 +349,19 @@ def kernel_helion_v10_attention(
 
         # Number of KV blocks this (seq, query position) attends to, and how
         # many blocks each segment covers so that at most ``num_segments``
-        # segments are used (mirrors Triton's tiles_per_segment).
+        # segments are used (mirrors Triton's tiles_per_segment). Integer cdiv
+        # keeps these as index-typed values (no float -> index rounding).
         max_seq_prefix_len = context_len + tile_q.begin + q_block_size + 1
         max_seq_prefix_len = torch.minimum(max_seq_prefix_len, seq_len)
-        num_blocks = torch.ceil(max_seq_prefix_len / page_size)
-        blocks_per_segment = torch.ceil(num_blocks / num_segments)
+        num_blocks = helion.cdiv(max_seq_prefix_len, page_size)
+        blocks_per_segment = helion.cdiv(num_blocks, num_segments)
 
+        # Absolute [start, end) block range this segment owns. When the segment
+        # index is past the used range, seg_block_start >= seg_block_end, so the
+        # inner loop is empty and the neutral init below is stored unchanged.
         seg_block_start = seg_idx * blocks_per_segment
-        seg_num_blocks = (
-            torch.minimum(seg_block_start + blocks_per_segment, num_blocks)
-            - seg_block_start
+        seg_block_end = torch.minimum(
+            (seg_idx + 1) * blocks_per_segment, num_blocks
         )
 
         block_m_size = num_queries_per_kv * q_block_size
@@ -368,8 +371,11 @@ def kernel_helion_v10_attention(
         adjusted_tile_q_index = query_start + tile_q.begin + hl.arange(q_block_size)
         query_head_offset = tile_m.begin + hl.arange(num_queries_per_kv)
 
-        # Only process valid query positions with work to do in this segment.
-        if seg_num_blocks > 0 and query_start + tile_q.begin < query_end:
+        # Single scalar predicate (no `and` / `else`): Helion cannot lower `and`
+        # between two boolean tensors, and a divergent if/else with stores in
+        # both branches is hard to lower. Instead we guard only on query
+        # validity and let an empty segment fall through to the neutral store.
+        if query_start + tile_q.begin < query_end:
             q_load_mask = adjusted_tile_q_index[:, None, None] < query_end
             # (tile_q, tile_m, HEAD_SIZE)
             q = hl.load(
@@ -380,17 +386,21 @@ def kernel_helion_v10_attention(
             # (tile_m, HEAD_SIZE)
             q = q.flatten(start_dim=0, end_dim=1)
 
-            # Local online-softmax state for this segment. As in the Triton
-            # reference, the L init value is irrelevant: the first inner tile
-            # has M_seg == -inf so alpha == 0 annihilates it (L = L_j). The
-            # *unscaled* per-segment L_seg is summed across segments in stage 2.
+            # Neutral online-softmax state. Unlike the single-pass kernels, L
+            # MUST start at 0.0 here: an empty segment runs zero inner
+            # iterations, so the init survives and is stored as the neutral
+            # partial (numerator 0, denominator 0, max -inf) that contributes
+            # nothing to the stage-2 reduction.
             M_seg = hl.full([block_m_size], float("-inf"), dtype=torch.float32)
-            L_seg = hl.full([block_m_size], 1.0, dtype=torch.float32)
+            L_seg = hl.full([block_m_size], 0.0, dtype=torch.float32)
             acc_seg = hl.zeros([block_m_size, head_size], dtype=torch.float32)
 
-            # Inner sequential loop over the K/V blocks of this segment.
-            for tile_n_inner in hl.tile(seg_num_blocks, block_size=num_pages_at_once):
-                inner_block_idx = seg_block_start + tile_n_inner.begin
+            # Inner sequential loop over this segment's absolute block range.
+            # Empty when seg_block_start >= seg_block_end.
+            for tile_n_inner in hl.tile(
+                seg_block_start, seg_block_end, block_size=num_pages_at_once
+            ):
+                inner_block_idx = tile_n_inner.begin
 
                 block_n_size = num_pages_at_once * page_size
                 # explicit load due to wrong if tile_n is partial
@@ -451,10 +461,11 @@ def kernel_helion_v10_attention(
                 # (tile_m, HEAD_SIZE)
                 acc_seg = hl.dot(P.to(v.dtype), v, out_dtype=torch.float32, acc=acc_seg)
 
-            # Store *unscaled* partials for this segment. The reduction stage
-            # applies the numerically stable exp(M_seg - overall_max) rescale.
-            # Token-indexed writes to a unique (token, head, segment) slice, so
-            # no atomics / cross-tile sync are required.
+            # Store *unscaled* partials for this segment (single store path for
+            # both active and empty segments). The reduction stage applies the
+            # numerically stable exp(M_seg - overall_max) rescale. Token-indexed
+            # writes to a unique (token, head, segment) slice, so no atomics /
+            # cross-tile sync are required.
             store_mask = adjusted_tile_q_index[:, None] < query_end
             acc_seg_view = acc_seg.view([q_block_size, num_queries_per_kv, head_size])
             L_seg_view = L_seg.view([q_block_size, num_queries_per_kv])
@@ -476,32 +487,6 @@ def kernel_helion_v10_attention(
                 [adjusted_tile_q_index, query_head_offset, seg_idx],
                 M_seg_view,
                 extra_mask=store_mask,
-            )
-        else:
-            # Inactive segment for this (token, head): write neutral partials
-            # so the reduction can sum unconditionally. max = -inf, exp-sum = 0,
-            # numerator = 0 contribute nothing.
-            neutral_mask = adjusted_tile_q_index[:, None] < query_end
-            zero_out = hl.zeros([q_block_size, num_queries_per_kv, head_size], dtype=torch.float32)
-            zero_L = hl.zeros([q_block_size, num_queries_per_kv], dtype=torch.float32)
-            neg_inf_M = hl.full([q_block_size, num_queries_per_kv], float("-inf"), dtype=torch.float32)
-            hl.store(
-                tmp_out,
-                [adjusted_tile_q_index, query_head_offset, seg_idx, hl.arange(head_size)],
-                zero_out,
-                extra_mask=neutral_mask[:, :, None],
-            )
-            hl.store(
-                tmp_L,
-                [adjusted_tile_q_index, query_head_offset, seg_idx],
-                zero_L,
-                extra_mask=neutral_mask,
-            )
-            hl.store(
-                tmp_M,
-                [adjusted_tile_q_index, query_head_offset, seg_idx],
-                neg_inf_M,
-                extra_mask=neutral_mask,
             )
 
     # Grid-wide barrier: separates the two top-level device loops so every
