@@ -679,24 +679,32 @@ def helion_unified_attention(
     #     or num_seqs > seq_threshold_3D
     #     or is_batch_invariant
     # )
-    
-    # kernel_helion_v9_attention(
-    #     t_output=out,
-    #     t_query=q,
-    #     t_key_cache=k,
-    #     t_value_cache=v,
-    #     t_block_tables=block_table,
-    #     t_seq_lens=seqused_k,
-    #     scale=softmax_scale,
-    #     t_query_start_lens=cu_seqlens_q,
-    #     max_query_len=max_seqlen_q,
-    #     num_seqs=num_seqs,
-    #     q_block_padded_size=max_used_querylen_padded,
-    #     batch_size_padded=batch_size_padded,
-    #     decode_frac_bucket=decode_frac_bucket,
-    #     prefill_skew_bucket=prefill_skew_bucket,
-    # )
-    
+
+    # Route between the 2D (v9) and 3D split-K (v10) kernels based on whether
+    # the caller supplied the per-segment temporary buffers. When they are all
+    # None we run the single-pass 2D kernel; otherwise we run the split-K
+    # kernel that writes/reduces per-segment partials.
+    use_3d = tmp_out is not None and tmp_L is not None and tmp_M is not None
+
+    if not use_3d:
+        kernel_helion_v9_attention(
+            t_output=out,
+            t_query=q,
+            t_key_cache=k,
+            t_value_cache=v,
+            t_block_tables=block_table,
+            t_seq_lens=seqused_k,
+            scale=softmax_scale,
+            t_query_start_lens=cu_seqlens_q,
+            max_query_len=max_seqlen_q,
+            num_seqs=num_seqs,
+            q_block_padded_size=max_used_querylen_padded,
+            batch_size_padded=batch_size_padded,
+            decode_frac_bucket=decode_frac_bucket,
+            prefill_skew_bucket=prefill_skew_bucket,
+        )
+        return
+
     kernel_helion_v10_attention(
         t_output=out,
         t_query=q,
