@@ -377,8 +377,6 @@ def kernel_helion_v10_attention(
             (seg_idx + 1) * blocks_per_segment, num_blocks
         )
 
-        kv_head_idx = tile_m.begin // num_queries_per_kv
-
         # cannot use tile_q.index directly, since tile_q.index is dynamic
         adjusted_tile_q_index = query_start + tile_q.begin + hl.arange(q_block_size)
         query_head_offset = tile_m.begin + hl.arange(num_queries_per_kv)
@@ -413,6 +411,13 @@ def kernel_helion_v10_attention(
                 seg_block_start, seg_block_end, block_size=num_pages_at_once
             ):
                 inner_block_idx = tile_n_inner.begin
+
+                # Computed inside the inner loop (not the outer grid body) so it
+                # stays local to the stage-1 region of the fused persistent
+                # (barrier) kernel; a value assigned in the outer body gets
+                # hoisted to a kernel parameter that stage-2's region then
+                # references out of scope (NameError in the generated Triton).
+                kv_head_idx = tile_m.begin // num_queries_per_kv
 
                 # explicit load due to wrong if tile_n is partial
                 blk_idxs = hl.load(
