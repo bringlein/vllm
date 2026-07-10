@@ -83,6 +83,9 @@ def _triton_baseline_fn(
     batch_size_padded,
     decode_frac_bucket,
     prefill_skew_bucket,
+    tmp_out=None,
+    tmp_L=None,
+    tmp_M=None,
 ):
     max_seqlen = t_seq_lens.max()
     return triton_baseline_unified_attention(
