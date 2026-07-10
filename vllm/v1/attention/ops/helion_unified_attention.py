@@ -335,6 +335,9 @@ def kernel_helion_v10_attention(
     # kernel parameter that the stage-2 region then references out of scope
     # (NameError: 'block_n_size' is not defined in the generated Triton).
     block_n_size = num_pages_at_once * page_size
+    # Query rows (queries-per-kv * q tile) per stage-1 tile. Hoisted to the top
+    # level for the same fused-kernel scoping reason as block_n_size above.
+    block_m_size = num_queries_per_kv * q_block_size
 
     # ---------------------------------------------------------------------
     # Stage 1: per-segment partial attention.
@@ -374,7 +377,6 @@ def kernel_helion_v10_attention(
             (seg_idx + 1) * blocks_per_segment, num_blocks
         )
 
-        block_m_size = num_queries_per_kv * q_block_size
         kv_head_idx = tile_m.begin // num_queries_per_kv
 
         # cannot use tile_q.index directly, since tile_q.index is dynamic
