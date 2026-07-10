@@ -183,6 +183,9 @@ def kernel_helion_v9_attention(
             q = q.flatten(start_dim=0, end_dim=1)
 
             M = hl.full([block_m_size], float("-inf"), dtype=torch.float32)
+            # L init value is irrelevant: on the first tile M == -inf makes
+            # alpha = exp(M - M_j) == 0, so L = L*alpha + L_j == L_j regardless.
+            # Kept at 1.0 to match the Triton reference (softmax_step).
             L = hl.full([block_m_size], 1.0, dtype=torch.float32)
             acc = hl.zeros([block_m_size, head_size], dtype=torch.float32)
 
@@ -299,29 +302,41 @@ def kernel_helion_v10_attention(
     # prefill query-length skew bucket: triggers re-tuning when the prefill
     # length distribution changes (uniform vs mixed short/long prompts)
     prefill_skew_bucket: hl.constexpr,
-    # Split-K temporary buffers (pre-allocated in backend)
-    tmp_acc_scaled: torch.Tensor,  # [num_seqs, num_query_heads, max_query_len, max_outer_chunks, head_size]
-    tmp_L_scaled: torch.Tensor,  # [num_seqs, num_query_heads, max_query_len, max_outer_chunks]
+    # Split-K temporary buffers (pre-allocated in backend), token-indexed and
+    # mirroring Triton's softmax_segm_{output,expsum,max} triple. Each segment
+    # holds an *unscaled* partial numerator / denominator / running-max so the
+    # reduction stage can subtract a global max for numerical stability.
+    tmp_out: torch.Tensor,  # [num_tokens, num_query_heads, num_segments, head_size]
+    tmp_L: torch.Tensor,  # [num_tokens, num_query_heads, num_segments]
+    tmp_M: torch.Tensor,  # [num_tokens, num_query_heads, num_segments]
 ):
     head_size = hl.specialize(t_query.size(2))
     num_kv_heads = hl.specialize(t_key_cache.size(2))
     num_query_heads = hl.specialize(t_query.size(1))
     page_size = hl.specialize(t_value_cache.size(1))
     num_queries_per_kv = hl.specialize(num_query_heads // num_kv_heads)
+    # Bounded number of split-K segments per (token, head); comes from the
+    # pre-allocated buffer and is independent of sequence length. Mirrors
+    # Triton's NUM_PAR_SOFTMAX_SEGMENTS.
+    num_segments = hl.specialize(tmp_out.size(2))
 
     assert page_size == t_key_cache.size(1)
     assert head_size == t_key_cache.size(3)
 
     q_block_size = hl.register_block_size(1, q_block_padded_size)
     num_pages_at_once = hl.register_block_size(1, 32)
-    split_k_factor = hl.register_tunable("split_k_factor", hl.PowerOfTwoFragment(1, 64))
 
-    # Get max_outer_chunks from pre-allocated buffer
-    max_outer_chunks = tmp_acc_scaled.size(3)
-
-    # Grid includes tile_n_outer for true split-K parallelization
-    for seq_tile, tile_m, tile_q, tile_n_outer in hl.tile(
-        [num_seqs, num_query_heads, max_query_len, max_outer_chunks],
+    # ---------------------------------------------------------------------
+    # Stage 1: per-segment partial attention.
+    #
+    # The KV range for each (seq, query position) is split into up to
+    # ``num_segments`` contiguous block ranges. Each grid tile handles one
+    # segment and writes its *unscaled* online-softmax partials (numerator,
+    # denominator, running max) to a unique slice of the tmp_* buffers, so no
+    # cross-tile synchronization is needed within this loop.
+    # ---------------------------------------------------------------------
+    for seq_tile, tile_m, tile_q, tile_seg in hl.tile(
+        [num_seqs, num_query_heads, max_query_len, num_segments],
         block_size=[1, num_queries_per_kv, q_block_size, 1],
     ):
         seq_idx = seq_tile.begin
@@ -330,21 +345,31 @@ def kernel_helion_v10_attention(
         query_end = t_query_start_lens[seq_idx + 1]
         query_len = query_end - query_start
         context_len = seq_len - query_len
+        seg_idx = tile_seg.begin
 
-        # Compute valid num_blocks for this sequence/query position
+        # Number of KV blocks this (seq, query position) attends to, and how
+        # many blocks each segment covers so that at most ``num_segments``
+        # segments are used (mirrors Triton's tiles_per_segment).
         max_seq_prefix_len = context_len + tile_q.begin + q_block_size + 1
         max_seq_prefix_len = torch.minimum(max_seq_prefix_len, seq_len)
         num_blocks = torch.ceil(max_seq_prefix_len / page_size)
-        num_outer_chunks = torch.ceil(num_blocks / split_k_factor)
+        blocks_per_segment = torch.ceil(num_blocks / num_segments)
 
-        # Process only if within valid range and has work to do
-        if tile_n_outer.begin < num_outer_chunks and query_start + tile_q.begin < query_end:
-            block_m_size = num_queries_per_kv * q_block_size
-            kv_head_idx = tile_m.begin // num_queries_per_kv
+        seg_block_start = seg_idx * blocks_per_segment
+        seg_num_blocks = (
+            torch.minimum(seg_block_start + blocks_per_segment, num_blocks)
+            - seg_block_start
+        )
 
-            # cannot use tile_q.index directly, since tile_q.index is dynamic
-            adjusted_tile_q_index = query_start + tile_q.begin + hl.arange(q_block_size)
-            query_head_offset = tile_m.begin + hl.arange(num_queries_per_kv)
+        block_m_size = num_queries_per_kv * q_block_size
+        kv_head_idx = tile_m.begin // num_queries_per_kv
+
+        # cannot use tile_q.index directly, since tile_q.index is dynamic
+        adjusted_tile_q_index = query_start + tile_q.begin + hl.arange(q_block_size)
+        query_head_offset = tile_m.begin + hl.arange(num_queries_per_kv)
+
+        # Only process valid query positions with work to do in this segment.
+        if seg_num_blocks > 0 and query_start + tile_q.begin < query_end:
             q_load_mask = adjusted_tile_q_index[:, None, None] < query_end
             # (tile_q, tile_m, HEAD_SIZE)
             q = hl.load(
@@ -355,128 +380,198 @@ def kernel_helion_v10_attention(
             # (tile_m, HEAD_SIZE)
             q = q.flatten(start_dim=0, end_dim=1)
 
-            # Each thread block processes one outer chunk
-            chunk_start = tile_n_outer.begin * split_k_factor
-            chunk_num_blocks = torch.minimum(chunk_start + split_k_factor, num_blocks) - chunk_start
-            
-            # Initialize local M, L, acc for this chunk
-            M_chunk = hl.full([block_m_size], float("-inf"), dtype=torch.float32)
-            L_chunk = hl.full([block_m_size], 1.0, dtype=torch.float32)
-            acc_chunk = hl.zeros([block_m_size, head_size], dtype=torch.float32)
-            
-            # Inner sequential loop over K/V blocks within the chunk
-            if chunk_num_blocks > 0:
-                for tile_n_inner in hl.tile(chunk_num_blocks, block_size=num_pages_at_once):
-                    # Compute actual block index
-                    inner_block_idx = chunk_start + tile_n_inner.begin
-                    
-                    block_n_size = num_pages_at_once * page_size
-                    # explicit load due to wrong if tile_n is partial
-                    blk_idxs = hl.load(
-                        t_block_tables,
-                        [seq_idx, inner_block_idx + hl.arange(num_pages_at_once)],
-                    )
-                    blk_idxs = blk_idxs.view([num_pages_at_once]).to(torch.int64)
-                    # Compute absolute tile offsets for this inner block
-                    absolute_tile_token_offsets = inner_block_idx * page_size + hl.arange(
-                        block_n_size
-                    )
+            # Local online-softmax state for this segment. As in the Triton
+            # reference, the L init value is irrelevant: the first inner tile
+            # has M_seg == -inf so alpha == 0 annihilates it (L = L_j). The
+            # *unscaled* per-segment L_seg is summed across segments in stage 2.
+            M_seg = hl.full([block_m_size], float("-inf"), dtype=torch.float32)
+            L_seg = hl.full([block_m_size], 1.0, dtype=torch.float32)
+            acc_seg = hl.zeros([block_m_size, head_size], dtype=torch.float32)
 
-                    # (tile_n, PAGE_SIZE, 1, HEAD_SIZE)
-                    k_load = t_key_cache[blk_idxs, :, kv_head_idx, :]
-                    k_load = k_load.flatten(start_dim=0, end_dim=1)
-                    # (tile_n, HEAD_SIZE)
-                    k = hl.zeros([block_n_size, head_size], dtype=k_load.dtype)
-                    k = torch.where(
-                        absolute_tile_token_offsets[:, None] < seq_len, k_load, k
-                    )
-                    # (HEAD_SIZE, tile_n)
-                    k = k.transpose(0, 1)
+            # Inner sequential loop over the K/V blocks of this segment.
+            for tile_n_inner in hl.tile(seg_num_blocks, block_size=num_pages_at_once):
+                inner_block_idx = seg_block_start + tile_n_inner.begin
 
-                    # (tile_n, PAGE_SIZE, HEAD_SIZE)
-                    v_load = t_value_cache[blk_idxs, :, kv_head_idx, :]
-                    v_load = v_load.flatten(start_dim=0, end_dim=1)
-                    # (tile_n, HEAD_SIZE)
-                    v = hl.zeros([block_n_size, head_size], dtype=v_load.dtype)
-                    v = torch.where(
-                        absolute_tile_token_offsets[:, None] < seq_len, v_load, v
-                    )
+                block_n_size = num_pages_at_once * page_size
+                # explicit load due to wrong if tile_n is partial
+                blk_idxs = hl.load(
+                    t_block_tables,
+                    [seq_idx, inner_block_idx + hl.arange(num_pages_at_once)],
+                )
+                blk_idxs = blk_idxs.view([num_pages_at_once]).to(torch.int64)
+                # Compute absolute tile offsets for this inner block
+                absolute_tile_token_offsets = inner_block_idx * page_size + hl.arange(
+                    block_n_size
+                )
 
-                    # (tile_m, tile_n)
-                    # use S with float32 as acc to enforce higher precision
-                    #  for the additions of the dot operation?
-                    S = hl.zeros([block_m_size, block_n_size], dtype=torch.float32)
-                    S = hl.dot(q, k, out_dtype=torch.float32, acc=S) * scale
-                    block_m_query_mask = tile_q.begin + hl.arange(
-                        q_block_size
-                    ).repeat_interleave(num_queries_per_kv, dim=0)
-                    # construct 2d causal mask
-                    causal_mask = (
-                        absolute_tile_token_offsets[None, :]
-                        < context_len + block_m_query_mask[:, None] + 1
-                    )
-                    S = torch.where(causal_mask, S, float("-inf"))
+                # (tile_n, PAGE_SIZE, 1, HEAD_SIZE)
+                k_load = t_key_cache[blk_idxs, :, kv_head_idx, :]
+                k_load = k_load.flatten(start_dim=0, end_dim=1)
+                # (tile_n, HEAD_SIZE)
+                k = hl.zeros([block_n_size, head_size], dtype=k_load.dtype)
+                k = torch.where(
+                    absolute_tile_token_offsets[:, None] < seq_len, k_load, k
+                )
+                # (HEAD_SIZE, tile_n)
+                k = k.transpose(0, 1)
 
-                    # Online softmax update within chunk (SEQUENTIAL)
-                    M_j = torch.maximum(M_chunk, torch.amax(S, 1))
-                    P = torch.exp(S - M_j[:, None])
-                    L_j = torch.sum(P, 1)
-                    alpha = torch.exp(M_chunk - M_j)
-                    acc_chunk = acc_chunk * alpha[:, None]
-                    L_chunk = (L_chunk * alpha) + L_j
-                    M_chunk = M_j
+                # (tile_n, PAGE_SIZE, HEAD_SIZE)
+                v_load = t_value_cache[blk_idxs, :, kv_head_idx, :]
+                v_load = v_load.flatten(start_dim=0, end_dim=1)
+                # (tile_n, HEAD_SIZE)
+                v = hl.zeros([block_n_size, head_size], dtype=v_load.dtype)
+                v = torch.where(
+                    absolute_tile_token_offsets[:, None] < seq_len, v_load, v
+                )
 
-                    # (tile_m, HEAD_SIZE)
-                    acc_chunk = hl.dot(P.to(v.dtype), v, out_dtype=torch.float32, acc=acc_chunk)
-                
-                # End of inner loop: compute scaled partial results for this chunk
-                # Scale by exp(M_chunk) for accumulation
-                scale_factor = torch.exp(M_chunk)  # (block_m_size,)
-                scaled_numerator = acc_chunk * scale_factor[:, None]  # (block_m_size, head_size)
-                scaled_denominator = L_chunk * scale_factor  # (block_m_size,)
-                
-                # Store partial results to unique slice
-                # Each tile_n_outer writes to tmp_*[tile_n_outer.begin], no atomic needed
-                tmp_acc_scaled[seq_idx, tile_m.begin, tile_q.begin, tile_n_outer.begin, :] = scaled_numerator
-                tmp_L_scaled[seq_idx, tile_m.begin, tile_q.begin, tile_n_outer.begin, :] = scaled_denominator
-        
-        # Stage 1 complete: grid-wide barrier to ensure all partials are written
-        # Only use barrier when split-K is actually enabled (split_k_factor > 1)
-        # For split_k_factor=1, there's only one outer chunk, so no synchronization needed
-        if split_k_factor > 1:
-            hl.barrier()
-        
-        # Stage 2: Reduction (only tile_n_outer.begin == 0 does this)
-        if tile_n_outer.begin == 0 and query_start + tile_q.begin < query_end:
-            # Recompute num_outer_chunks for this sequence
-            max_seq_prefix_len = context_len + tile_q.begin + q_block_size + 1
-            max_seq_prefix_len = torch.minimum(max_seq_prefix_len, seq_len)
-            num_blocks = torch.ceil(max_seq_prefix_len / page_size)
-            num_outer_chunks = torch.ceil(num_blocks / split_k_factor)
-            
-            # Sum across all outer chunks for this (seq, qhead, qpos)
-            acc_scaled_sum = torch.sum(
-                tmp_acc_scaled[seq_idx, tile_m.begin, tile_q.begin, :num_outer_chunks, :],
-                dim=0
-            )  # (block_m_size, head_size)
-            L_scaled_sum = torch.sum(
-                tmp_L_scaled[seq_idx, tile_m.begin, tile_q.begin, :num_outer_chunks],
-                dim=0
-            )  # (block_m_size,)
-            
-            # Final normalization
-            acc = acc_scaled_sum / L_scaled_sum[:, None]
-            
-            # cannot use tile_q.index directly, since tile_q.index is dynamic
+                # (tile_m, tile_n)
+                # use S with float32 as acc to enforce higher precision
+                #  for the additions of the dot operation?
+                S = hl.zeros([block_m_size, block_n_size], dtype=torch.float32)
+                S = hl.dot(q, k, out_dtype=torch.float32, acc=S) * scale
+                block_m_query_mask = tile_q.begin + hl.arange(
+                    q_block_size
+                ).repeat_interleave(num_queries_per_kv, dim=0)
+                # construct 2d causal mask
+                causal_mask = (
+                    absolute_tile_token_offsets[None, :]
+                    < context_len + block_m_query_mask[:, None] + 1
+                )
+                S = torch.where(causal_mask, S, float("-inf"))
+
+                # Online softmax update within segment (SEQUENTIAL)
+                M_j = torch.maximum(M_seg, torch.amax(S, 1))
+                P = torch.exp(S - M_j[:, None])
+                L_j = torch.sum(P, 1)
+                alpha = torch.exp(M_seg - M_j)
+                acc_seg = acc_seg * alpha[:, None]
+                L_seg = (L_seg * alpha) + L_j
+                M_seg = M_j
+
+                # (tile_m, HEAD_SIZE)
+                acc_seg = hl.dot(P.to(v.dtype), v, out_dtype=torch.float32, acc=acc_seg)
+
+            # Store *unscaled* partials for this segment. The reduction stage
+            # applies the numerically stable exp(M_seg - overall_max) rescale.
+            # Token-indexed writes to a unique (token, head, segment) slice, so
+            # no atomics / cross-tile sync are required.
+            store_mask = adjusted_tile_q_index[:, None] < query_end
+            acc_seg_view = acc_seg.view([q_block_size, num_queries_per_kv, head_size])
+            L_seg_view = L_seg.view([q_block_size, num_queries_per_kv])
+            M_seg_view = M_seg.view([q_block_size, num_queries_per_kv])
+            hl.store(
+                tmp_out,
+                [adjusted_tile_q_index, query_head_offset, seg_idx, hl.arange(head_size)],
+                acc_seg_view,
+                extra_mask=store_mask[:, :, None],
+            )
+            hl.store(
+                tmp_L,
+                [adjusted_tile_q_index, query_head_offset, seg_idx],
+                L_seg_view,
+                extra_mask=store_mask,
+            )
+            hl.store(
+                tmp_M,
+                [adjusted_tile_q_index, query_head_offset, seg_idx],
+                M_seg_view,
+                extra_mask=store_mask,
+            )
+        else:
+            # Inactive segment for this (token, head): write neutral partials
+            # so the reduction can sum unconditionally. max = -inf, exp-sum = 0,
+            # numerator = 0 contribute nothing.
+            neutral_mask = adjusted_tile_q_index[:, None] < query_end
+            zero_out = hl.zeros([q_block_size, num_queries_per_kv, head_size], dtype=torch.float32)
+            zero_L = hl.zeros([q_block_size, num_queries_per_kv], dtype=torch.float32)
+            neg_inf_M = hl.full([q_block_size, num_queries_per_kv], float("-inf"), dtype=torch.float32)
+            hl.store(
+                tmp_out,
+                [adjusted_tile_q_index, query_head_offset, seg_idx, hl.arange(head_size)],
+                zero_out,
+                extra_mask=neutral_mask[:, :, None],
+            )
+            hl.store(
+                tmp_L,
+                [adjusted_tile_q_index, query_head_offset, seg_idx],
+                zero_L,
+                extra_mask=neutral_mask,
+            )
+            hl.store(
+                tmp_M,
+                [adjusted_tile_q_index, query_head_offset, seg_idx],
+                neg_inf_M,
+                extra_mask=neutral_mask,
+            )
+
+    # Grid-wide barrier: separates the two top-level device loops so every
+    # segment partial is committed before the reduction stage reads it. Helion
+    # compiles this as a persistent-kernel phase boundary (host-side only).
+    hl.barrier()
+
+    # ---------------------------------------------------------------------
+    # Stage 2: reduction. For each (seq, query position, head group) combine
+    # the per-segment partials with a numerically stable global-max rescale
+    # (mirrors Triton's reduce_segments), normalize, and write the output.
+    # ---------------------------------------------------------------------
+    for seq_tile, tile_m, tile_q in hl.tile(
+        [num_seqs, num_query_heads, max_query_len],
+        block_size=[1, num_queries_per_kv, q_block_size],
+    ):
+        seq_idx = seq_tile.begin
+        query_start = t_query_start_lens[seq_idx]
+        query_end = t_query_start_lens[seq_idx + 1]
+
+        if query_start + tile_q.begin < query_end:
             adjusted_tile_q_index = query_start + tile_q.begin + hl.arange(q_block_size)
             query_head_offset = tile_m.begin + hl.arange(num_queries_per_kv)
-            q_load_mask = adjusted_tile_q_index[:, None, None] < query_end
-            
+            load_mask = adjusted_tile_q_index[:, None] < query_end
+
+            # (q_block_size, num_queries_per_kv, num_segments)
+            seg_M = hl.load(
+                tmp_M,
+                [adjusted_tile_q_index, query_head_offset, hl.arange(num_segments)],
+                extra_mask=load_mask[:, :, None],
+            )
+            seg_L = hl.load(
+                tmp_L,
+                [adjusted_tile_q_index, query_head_offset, hl.arange(num_segments)],
+                extra_mask=load_mask[:, :, None],
+            )
+            # (q_block_size, num_queries_per_kv, num_segments, head_size)
+            seg_out = hl.load(
+                tmp_out,
+                [
+                    adjusted_tile_q_index,
+                    query_head_offset,
+                    hl.arange(num_segments),
+                    hl.arange(head_size),
+                ],
+                extra_mask=load_mask[:, :, None, None],
+            )
+
+            # Global max across segments, then stable rescale factor in [0, 1].
+            overall_max = torch.amax(seg_M, dim=2)  # (q_block, nq_per_kv)
+            rescale = torch.exp(seg_M - overall_max[:, :, None])  # (..., num_segments)
+
+            overall_L = torch.sum(seg_L * rescale, dim=2)  # (q_block, nq_per_kv)
+            acc = torch.sum(
+                seg_out * rescale[:, :, :, None], dim=2
+            )  # (q_block, nq_per_kv, head_size)
+
+            # Safe divide (a fully-masked row has overall_L == 0).
+            acc = torch.where(
+                overall_L[:, :, None] > 0.0,
+                acc / overall_L[:, :, None],
+                acc,
+            )
+
+            store_mask = adjusted_tile_q_index[:, None, None] < query_end
             hl.store(
                 t_output,
-                [adjusted_tile_q_index, tile_m.index, hl.arange(head_size)],
-                acc.view([q_block_size, num_queries_per_kv, head_size]),
-                extra_mask=q_load_mask,
+                [adjusted_tile_q_index, query_head_offset, hl.arange(head_size)],
+                acc,
+                extra_mask=store_mask,
             )
 
 
@@ -504,8 +599,9 @@ def helion_unified_attention(
     capture_num_seqs: int | None = None,
     capture_max_query_len: int | None = None,
     capture_num_decode_tokens: int | None = None,
-    tmp_acc_scaled: torch.Tensor | None = None,
-    tmp_L_scaled: torch.Tensor | None = None,
+    tmp_out: torch.Tensor | None = None,
+    tmp_L: torch.Tensor | None = None,
+    tmp_M: torch.Tensor | None = None,
 ):
     assert causal, "Only causal attention is supported"
     assert q_descale is None, "Q scales not supported"
@@ -616,6 +712,7 @@ def helion_unified_attention(
         batch_size_padded=batch_size_padded,
         decode_frac_bucket=decode_frac_bucket,
         prefill_skew_bucket=prefill_skew_bucket,
-        tmp_acc_scaled=tmp_acc_scaled,
-        tmp_L_scaled=tmp_L_scaled,
+        tmp_out=tmp_out,
+        tmp_L=tmp_L,
+        tmp_M=tmp_M,
     )
