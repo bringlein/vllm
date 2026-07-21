@@ -3,6 +3,7 @@
 import os
 
 import helion
+import helion.experimental  # noqa: F401  # for aot_kernel (see below)
 import helion.language as hl
 import torch
 
@@ -121,6 +122,21 @@ def _triton_baseline_fn(
     print_output_code=False,
     # autotune_log="",
 )
+# AOT alternative: use a pretuned heuristic instead of autotuning. Generate it
+# with helpers/helion_cache_to_aot.py into helion_heuristics/, then point helion
+# at it via HELION_HEURISTIC_DIR=<repo>/helion_heuristics (or copy the file next
+# to this source) and run with HELION_AOT_MODE=evaluate. The file must be named
+# _helion_aot_helion_unified_attention_<device>_<compute>.py to match
+# get_hardware_info() on the target. Do NOT pass key= so the generated
+# key_kernel_helion_v9_attention receives the raw kernel args. Swap with the
+# @helion.kernel(...) decorator above.
+# @helion.experimental.aot_kernel(
+#     allow_warp_specialize=True,
+#     static_shapes=False,
+#     index_dtype=torch.int64,
+#     print_repro=False,
+#     print_output_code=False,
+# )
 def kernel_helion_v9_attention(
     t_output,  # [num_tokens, num_query_heads, head_size]
     t_query,  # [num_tokens, num_query_heads, head_size]
