@@ -93,6 +93,9 @@ if TYPE_CHECKING:
     # Deprecated alias of VLLM_TRITON_USE_TD (removed in v0.25).
     VLLM_TRITON_ATTN_USE_TD: bool | None = None
     VLLM_GPU_SYNC_CHECK: Literal["warn", "error"] | None = None
+    VLLM_TRITON_ATTN_DUMP_SHAPES: bool = False
+    VLLM_TRITON_ATTN_DUMP_PATH: str = "triton_attn_shapes.json"
+    VLLM_TRITON_ATTN_DUMP_DEDUP: bool = True
     MAX_JOBS: str | None = None
     NVCC_THREADS: str | None = None
     VLLM_USE_PRECOMPILED: bool = False
@@ -646,6 +649,22 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # not trip the unknown-env-var check; warns on use and is otherwise
     # ignored.
     "VLLM_TRITON_ATTN_USE_TD": lambda: _deprecated_triton_attn_use_td(),
+    # Dump every attention batch shape the TritonAttentionMetadataBuilder sees
+    # into a benchmark_paged_attention.py "capture_batches" JSON, so real
+    # serving traffic can be replayed as micro-benchmarks. Zero overhead unless
+    # VLLM_TRITON_ATTN_DUMP_SHAPES=1.
+    "VLLM_TRITON_ATTN_DUMP_SHAPES": lambda: bool(
+        int(os.getenv("VLLM_TRITON_ATTN_DUMP_SHAPES", "0"))
+    ),
+    # Output path for the shape dump (written atomically on interpreter exit).
+    "VLLM_TRITON_ATTN_DUMP_PATH": lambda: os.getenv(
+        "VLLM_TRITON_ATTN_DUMP_PATH", "triton_attn_shapes.json"
+    ),
+    # If 1 (default) collapse identical (query_lens, seq_lens) batches into a
+    # single entry with an occurrence count; if 0 keep every build() call.
+    "VLLM_TRITON_ATTN_DUMP_DEDUP": lambda: bool(
+        int(os.getenv("VLLM_TRITON_ATTN_DUMP_DEDUP", "1"))
+    ),
     # Maximum number of compilation jobs to run in parallel.
     # By default this is the number of CPUs
     "MAX_JOBS": lambda: os.getenv("MAX_JOBS", None),

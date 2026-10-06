@@ -267,6 +267,21 @@ class TritonAttentionMetadataBuilder(AttentionMetadataBuilder[TritonAttentionMet
             attn_metadata.rswa_prefix_lens = persistent_prefix_lens
             attn_metadata.rswa_window = self.rswa_window
 
+        if envs.VLLM_TRITON_ATTN_DUMP_SHAPES:
+            from vllm.v1.attention.backends.triton_attn_shape_dump import (
+                maybe_dump_shapes,
+            )
+
+            maybe_dump_shapes(
+                common_attn_metadata,
+                num_query_heads=self.num_heads_q,
+                num_kv_heads=self.num_heads_kv,
+                head_size=self.headdim,
+                block_size=self.block_size,
+                num_blocks=0,
+                dtype=self.vllm_config.model_config.dtype,
+            )
+
         return attn_metadata
 
     def update_draft_decode_metadata(self, _metadata: TritonAttentionMetadata) -> None:
