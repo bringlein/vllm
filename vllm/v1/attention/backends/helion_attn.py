@@ -1,0 +1,393 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Experimental attention layer in Helion.
+
+The kernel itself is selected at runtime from ``VLLM_HELION_ATTN_VERSION``
+(see ``vllm.v1.attention.ops.helion``); this backend only builds the metadata
+and marshals the KV cache views.
+"""
+
+from dataclasses import dataclass
+from typing import ClassVar
+
+import torch
+
+from vllm.config import VllmConfig
+from vllm.config.cache import CacheDType
+from vllm.logger import init_logger
+from vllm.model_executor.layers.quantization.utils.quant_utils import (
+    QuantKey,
+    kFp8StaticTensorSym,
+)
+from vllm.platforms import current_platform
+from vllm.platforms.interface import DeviceCapability
+from vllm.utils.torch_utils import is_quantized_kv_cache
+from vllm.v1.attention.backend import (
+    AttentionBackend,
+    AttentionCGSupport,
+    AttentionImpl,
+    AttentionLayer,
+    AttentionMetadataBuilder,
+    AttentionType,
+    CommonAttentionMetadata,
+    MultipleOf,
+)
+from vllm.v1.attention.ops.helion import (
+    get_helion_attn_version,
+    get_helion_unified_attention,
+)
+from vllm.v1.attention.ops.triton_reshape_and_cache_flash import (
+    triton_reshape_and_cache_flash,
+)
+from vllm.v1.kv_cache_interface import AttentionSpec
+from vllm.v1.kv_cache_layout import KVCacheLayout
+
+logger = init_logger(__name__)
+
+
+@dataclass
+class HelionAttentionMetadata:
+    # NOTE(sang): Definition of context_len, query_len, and seq_len.
+    # |---------- N-1 iteration --------|
+    # |---------------- N iteration ---------------------|
+    # |- tokenA -|......................|-- newTokens ---|
+    # |---------- context_len ----------|
+    # |-------------------- seq_len ---------------------|
+    #                                   |-- query_len ---|
+
+    num_actual_tokens: int  # Number of tokens excluding padding.
+    max_query_len: int
+    query_start_loc: torch.Tensor
+    max_seq_len: int
+    seq_lens: torch.Tensor
+    block_table: torch.Tensor
+    slot_mapping: torch.Tensor
+
+    # Number of decode tokens in the batch (drives the decode/prefill and
+    # prefill-skew specialization buckets)
+    num_decode_tokens: int
+
+    capture_num_seqs: int | None = None
+    capture_max_query_len: int | None = None
+    capture_num_decode_tokens: int | None = None
+
+
+class HelionAttentionMetadataBuilder(AttentionMetadataBuilder[HelionAttentionMetadata]):
+    _cudagraph_support: ClassVar[AttentionCGSupport] = AttentionCGSupport.ALWAYS
+
+    def __init__(
+        self,
+        kv_cache_spec: AttentionSpec,
+        layer_names: list[str],
+        vllm_config: VllmConfig,
+        device: torch.device,
+    ):
+        super().__init__(kv_cache_spec, layer_names, vllm_config, device)
+
+        self.block_size = kv_cache_spec.block_size
+
+        model_config = vllm_config.model_config
+        self.num_heads_q = model_config.get_num_attention_heads(
+            vllm_config.parallel_config
+        )
+        self.num_heads_kv = model_config.get_num_kv_heads(vllm_config.parallel_config)
+        self.headdim = model_config.get_head_size()
+
+    def build_for_cudagraph_capture(
+        self, common_attn_metadata: CommonAttentionMetadata
+    ) -> HelionAttentionMetadata:
+        """Build attention metadata for CUDA graph capture.
+
+        For Helion, we preserve max_query_len and seq_lens for mixed prefill-decode
+        batches to ensure the kernel compiles with appropriate q_block_padded_size
+        constexpr values.
+        Yes, that increases capture time but the performance of the Helion kernel is
+        sensitive to it. Also, we do autotuning during capture (for now) so we want
+        to be sure we tune the right thing.
+        """
+        attn_metadata = self.build(0, common_attn_metadata)
+
+        attn_metadata.capture_num_seqs = (
+            common_attn_metadata.query_start_loc.shape[0] - 1
+        )
+        attn_metadata.capture_max_query_len = common_attn_metadata.max_query_len
+
+        # build() already computed the TRUE decode-token count (= decode
+        # sequences, since a decode sequence has query_len == 1) for this
+        # synthetic capture batch. Pinning it here ensures the Helion mix
+        # buckets distinguish a pure-decode capture (all query_len == 1) from a
+        # prefill/mixed capture (query_len > 1), so they compile/tune as
+        # different specializations.
+        attn_metadata.capture_num_decode_tokens = attn_metadata.num_decode_tokens
+
+        # Check if this is a mixed prefill-decode batch
+        is_mixed_batch = common_attn_metadata.max_query_len > 1
+
+        if is_mixed_batch:
+            # For mixed batches, cap seq_lens to avoid slow capture but preserve
+            # the fact that max_query_len > 1. This ensures Helion compiles with
+            # q_block_padded_size > 1.
+            #
+            # vLLM already sets max_query_len = bucket_size for mixed batches,
+            # so we get separate compiled kernels for different bucket sizes.
+            seq_lens_cap = min(common_attn_metadata.max_query_len, 128)
+            attn_metadata.seq_lens.fill_(seq_lens_cap)
+            attn_metadata.max_seq_len = max(seq_lens_cap, attn_metadata.max_query_len)
+        else:
+            # Pure decode batch: use seq_lens=1 for optimized decode path
+            attn_metadata.seq_lens.fill_(1)
+
+        return attn_metadata
+
+    def build(
+        self,
+        common_prefix_len: int,
+        common_attn_metadata: CommonAttentionMetadata,
+        fast_build: bool = False,
+    ) -> HelionAttentionMetadata:
+        max_query_len = common_attn_metadata.max_query_len
+
+        # True number of decode tokens (= decode sequences, since a decode
+        # sequence has query_len == 1). This drives the Helion mix buckets that
+        # steer JIT specialization / re-autotuning; using num_actual_tokens here
+        # would collapse the decode/prefill-ratio bucket to a constant. Computed
+        # from the CPU query_start_loc copy to avoid a GPU sync on the hot path.
+        if max_query_len <= 1:
+            # Pure decode batch: every sequence has query_len == 1.
+            num_decode_tokens = common_attn_metadata.num_reqs
+        else:
+            query_lens_cpu = (
+                common_attn_metadata.query_start_loc_cpu[1:]
+                - common_attn_metadata.query_start_loc_cpu[:-1]
+            )
+            num_decode_tokens = int((query_lens_cpu == 1).sum().item())
+
+        return HelionAttentionMetadata(
+            num_actual_tokens=common_attn_metadata.num_actual_tokens,
+            max_query_len=max_query_len,
+            query_start_loc=common_attn_metadata.query_start_loc,
+            max_seq_len=common_attn_metadata.max_seq_len,
+            seq_lens=common_attn_metadata.seq_lens,
+            block_table=common_attn_metadata.block_table_tensor,
+            slot_mapping=common_attn_metadata.slot_mapping,
+            num_decode_tokens=num_decode_tokens,
+        )
+
+
+class HelionAttentionBackend(AttentionBackend):
+    supported_dtypes: ClassVar[list[torch.dtype]] = [
+        torch.float16,
+        torch.bfloat16,
+        torch.float32,
+    ]
+    supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = [
+        "auto",
+        "fp8",
+        "fp8_e4m3",
+        "fp8_e5m2",
+    ]
+
+    forward_includes_kv_cache_update: bool = False
+
+    @staticmethod
+    def get_supported_kernel_block_sizes(kv_cache_spec=None) -> list[int | MultipleOf]:
+        return [MultipleOf(16)]
+
+    @classmethod
+    def supports_block_size(cls, block_size: int | None) -> bool:
+        if block_size is None:
+            return True
+        return block_size % 16 == 0
+
+    @staticmethod
+    def get_name() -> str:
+        return "EXPERIMENTAL_HELION_ATTN"
+
+    @staticmethod
+    def get_impl_cls() -> type["HelionAttentionImpl"]:
+        return HelionAttentionImpl
+
+    @staticmethod
+    def get_builder_cls() -> type["HelionAttentionMetadataBuilder"]:
+        return HelionAttentionMetadataBuilder
+
+    @classmethod
+    def supported_kv_cache_layouts(cls) -> tuple[KVCacheLayout, ...]:
+        # The kernels index K/V as [num_blocks, block_size, num_kv_heads,
+        # head_size], which is the LBNHC per-layer view.
+        return (KVCacheLayout.LBNHC,)
+
+    @classmethod
+    def supports_head_size(cls, head_size: int) -> bool:
+        return head_size >= 32
+
+    @classmethod
+    def supports_compute_capability(cls, capability: DeviceCapability) -> bool:
+        return True
+
+
+class HelionAttentionImpl(AttentionImpl):
+    def fused_output_quant_supported(self, quant_key: QuantKey):
+        return quant_key == kFp8StaticTensorSym
+
+    def __init__(
+        self,
+        num_heads: int,
+        head_size: int,
+        scale: float,
+        num_kv_heads: int,
+        alibi_slopes: list[float] | None,
+        sliding_window: int | None,
+        kv_cache_dtype: str,
+        logits_soft_cap: float | None = None,
+        attn_type: str = AttentionType.DECODER,
+        kv_sharing_target_layer_name: str | None = None,
+    ) -> None:
+        self.num_heads = num_heads
+        self.head_size = head_size
+        self.scale = float(scale)
+        self.num_kv_heads = num_kv_heads
+        if alibi_slopes is not None:
+            alibi_slopes = torch.tensor(alibi_slopes, dtype=torch.float32)
+        self.alibi_slopes = alibi_slopes
+        if sliding_window is None:
+            self.sliding_window = (-1, -1)
+        else:
+            self.sliding_window = (sliding_window - 1, 0)
+        self.kv_cache_dtype = kv_cache_dtype
+        if logits_soft_cap is None:
+            logits_soft_cap = 0
+        self.logits_soft_cap = logits_soft_cap
+        self.kv_sharing_target_layer_name = kv_sharing_target_layer_name
+
+        self.num_queries_per_kv = self.num_heads // self.num_kv_heads
+
+        if attn_type != AttentionType.DECODER:
+            raise NotImplementedError(
+                "Encoder self-attention and "
+                "encoder/decoder cross-attention "
+                "are not implemented for "
+                "HelionAttentionImpl"
+            )
+
+        self.fp8_dtype = current_platform.fp8_dtype()
+        self.supports_quant_query_input = current_platform.is_cuda()
+
+        # Resolved here so an unset/unknown VLLM_HELION_ATTN_VERSION fails at
+        # layer construction rather than on the first forward.
+        self.helion_unified_attention = get_helion_unified_attention()
+        logger.info_once(
+            "Using experimental Helion attention kernel %s",
+            get_helion_attn_version(),
+        )
+
+    def _key_value_caches(
+        self, kv_cache: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Split the logical (B, H, N, 2*hs) cache into the kernels' layout.
+
+        The Helion kernels index K/V as [num_blocks, block_size, num_kv_heads,
+        head_size], which is exactly what the transpose + split yields.
+        """
+        key_cache, value_cache = kv_cache.transpose(1, 2).split(self.head_size, dim=-1)
+        if is_quantized_kv_cache(self.kv_cache_dtype):
+            key_cache = key_cache.view(self.fp8_dtype)
+            value_cache = value_cache.view(self.fp8_dtype)
+        return key_cache, value_cache
+
+    def do_kv_cache_update(
+        self,
+        layer: AttentionLayer,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        kv_cache: torch.Tensor,
+        slot_mapping: torch.Tensor,
+    ):
+        key_cache, value_cache = self._key_value_caches(kv_cache)
+        triton_reshape_and_cache_flash(
+            key,
+            value,
+            key_cache,
+            value_cache,
+            slot_mapping,
+            self.kv_cache_dtype,
+            layer._k_scale,
+            layer._v_scale,
+        )
+
+    def forward(
+        self,
+        layer: AttentionLayer,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        kv_cache: torch.Tensor,
+        attn_metadata: HelionAttentionMetadata,
+        output: torch.Tensor,
+        output_scale: torch.Tensor | None = None,
+        output_block_scale: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Forward pass with Paged Attention impl. in Helion.
+
+        Args:
+            layer: The attention layer, providing the q/k/v quantization scales.
+            query: shape = [num_tokens, num_heads, head_size]
+            key: shape = [num_tokens, num_kv_heads, head_size]
+            value: shape = [num_tokens, num_kv_heads, head_size]
+            kv_cache: shape =
+                [num_blocks, num_kv_heads, block_size, 2 * head_size]
+            attn_metadata: Metadata for attention.
+            output: Tensor that the attention result is written into.
+            output_scale: Scale for fused output quantization.
+            output_block_scale: Block scale for fused output quantization;
+                not supported by this backend.
+
+        Returns:
+            shape = [num_tokens, num_heads * head_size]
+
+        """
+        if output_block_scale is not None:
+            raise NotImplementedError(
+                "fused block_scale output quantization is not yet supported"
+                " for HelionAttentionImpl"
+            )
+
+        if attn_metadata is None:
+            # Profiling run.
+            return output.fill_(0)
+
+        num_actual_tokens = attn_metadata.num_actual_tokens
+
+        key_cache, value_cache = self._key_value_caches(kv_cache)
+        if is_quantized_kv_cache(self.kv_cache_dtype):
+            assert layer._q_scale_float == 1.0, (
+                "A non 1.0 q_scale is not currently supported."
+            )
+
+        cu_seqlens_q = attn_metadata.query_start_loc
+
+        self.helion_unified_attention(
+            q=query[:num_actual_tokens],
+            k=key_cache,
+            v=value_cache,
+            out=output[:num_actual_tokens],
+            cu_seqlens_q=cu_seqlens_q,
+            max_seqlen_q=attn_metadata.max_query_len,
+            seqused_k=attn_metadata.seq_lens,
+            max_seqlen_k=attn_metadata.max_seq_len,
+            softmax_scale=self.scale,
+            causal=True,
+            window_size=self.sliding_window,
+            block_table=attn_metadata.block_table,
+            num_seqs=cu_seqlens_q.shape[0] - 1,
+            num_decode_tokens=attn_metadata.num_decode_tokens,
+            softcap=self.logits_soft_cap,
+            q_descale=None,
+            k_descale=None,
+            v_descale=None,
+            capture_num_seqs=attn_metadata.capture_num_seqs,
+            capture_max_query_len=attn_metadata.capture_max_query_len,
+            capture_num_decode_tokens=attn_metadata.capture_num_decode_tokens,
+        )
+
+        return output
