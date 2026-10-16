@@ -530,6 +530,36 @@ def kernel_helion_v14_attention(
             )
 
 
+# Pretuned configs: `_helion_aot_helion_v14_unified_attention_cuda_sm100.py`
+# next to this file is the AOT heuristic helion looks for (name format and
+# lookup order in `helion/autotuner/aot_cache.py:184`). It is only consulted by
+# `AOTAutotuneCache`, so selecting that cache is the whole opt-in::
+#
+#     HELION_AUTOTUNE_CACHE=AOTAutotuneCache
+#
+# `HELION_AOT_MODE` needs no value: the heuristic is read for its `disabled`,
+# `evaluate` and `compile` modes alike (`aot_cache.py:674`), and `evaluate` is
+# the default. Only `collect` and `measure` bypass it -- do not leave either in
+# the environment. Add HELION_AOT_VERBOSE=1 to confirm it took: on a miss helion
+# prints `[AOT] Warning: No heuristic found` once and silently runs the
+# *default* config, and a broken heuristic file is swallowed into `log.warning`
+# (`aot_cache.py:938`).
+#
+# Done via env rather than swapping in `@helion.aot_kernel` because
+# `kernel_source_hash` is taken over `inspect.getsource()` of the function
+# *including its decorators* (`helion/autotuner/local_cache.py:275`), so any
+# edit inside `@helion.kernel(...)` strands every tuned config for this kernel
+# -- same reason as the `# fmt: off` above. Cost of the env route: without
+# `_key_fn` the specialization key is not reduced to the config index, so there
+# is one BoundKernel per distinct constexpr tuple rather than per selected
+# config. Config selection is unaffected -- the five `hl.constexpr` args that
+# the heuristic keys on are already exact in the specialization key
+# (`helion/runtime/kernel.py:1677`).
+#
+# NOTE this file's heuristic was generated while v14 tuning was still running
+# (74 entries); regenerate with scripts/cache_to_aot.py when it finishes.
+
+
 def helion_v14_unified_attention(
     q,
     k,
